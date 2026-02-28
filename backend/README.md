@@ -17,6 +17,39 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `POST /api/v1/chat`
 - `POST /api/v1/chat/stream` (SSE 流式输出)
 
+## RAG QA Chain (Enabled)
+
+当前问答链路已接入：
+- Chroma 向量检索（元信息）
+- LangChain Memory（Redis）
+- DeepSeek 生成回答
+- `citations` 返回检索命中的标准信息
+
+关键配置：
+- `EMBEDDING_API_KEY`
+- `EMBEDDING_BASE_URL`
+- `EMBEDDING_MODEL`
+- `CHROMA_PERSIST_DIR`
+- `CHROMA_COLLECTION`
+- `RAG_TOP_K`
+
+快速验证（非流式）：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "demo_user",
+    "session_id": "demo_session",
+    "query": "GB 2626 的发布日期是什么？"
+  }'
+```
+
+重点看返回字段：
+- `answer`：大模型回答
+- `citations`：检索命中的标准引用（不应长期为空）
+- `data.retrieved_count`：本次检索命中条数
+
 ## Memory behavior
 
 - Chat memory is enabled via LangChain `RunnableWithMessageHistory`.
@@ -58,7 +91,7 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 说明：
 - 该脚本不依赖 `is_deleted` 字段。
 - 该脚本不依赖 `update_time` 字段。
-- 当前写入向量的元信息文本包含：`a100/a298/a101/a205/a206/a000/a200/a825cn/a826cn`。
+- 当前写入向量的元信息文本包含：`a100/a298/a101/a205/a206/a000/a200/a825cn/a826cn/a330`。
 - 向量 ID 规则：`<table>:<id>`，重复执行会做 upsert（覆盖同 ID）。
 
 常见报错排查：
@@ -75,7 +108,7 @@ python scripts/test_chroma_vectors.py --query "口罩相关标准有哪些？" -
 
 输出里会看到：
 - `Vector count`：集合内总向量条数
-- TopK 命中项：`id / distance / a100 / a298 / a101 / a825cn / a826cn`
+- TopK 命中项：`id / distance / a100 / a298 / a101 / a825cn / a826cn / a330`
 
 ### 2) Recommended test questions
 

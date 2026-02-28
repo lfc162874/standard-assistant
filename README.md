@@ -1,100 +1,181 @@
 # 标准智能助手 (Standard Assistant)
 
-一个面向标准信息查询场景的 Web 单页智能问答系统。  
-当前版本已支持：
-- LangChain + DeepSeek 模型问答
-- SSE 流式输出
-- Markdown 格式回答渲染
-- 基于 `user_id + session_id` 的对话记忆（Redis 后端）
+面向“标准信息查询”场景的 Web 单页智能问答系统。  
+当前版本已完成基础检索增强 RAG 链路：
 
-## 项目特性
-- 前后端分离架构，目录清晰，便于独立开发和部署。
-- 后端基于 FastAPI，支持同步与流式两种聊天接口。
-- 前端基于 React + Vite，内置会话管理与后端健康检查。
-- 记忆链路基于 LangChain `RunnableWithMessageHistory`。
-- 提供 Docker Compose 一键启动，降低本地环境门槛。
+- PostgreSQL 标准元信息向量化入库（Chroma）
+- 问答时先检索再生成（RAG）
+- `citations` 返回引用信息（含标准号、发布日期、标准名称、适用范围）
+- SSE 流式输出 + Markdown 渲染
+- Redis 会话记忆（Memory）
+
+## 当前能力
+
+- 前后端分离：`frontend/` + `backend/`
+- 后端：FastAPI + LangChain + DeepSeek
+- 向量检索：Chroma（本地持久化）
+- 向量化脚本：`backend/scripts/ingest_standards_meta_to_chroma.py`
+- 向量验证脚本：`backend/scripts/test_chroma_vectors.py`
+- 接口：
+  - `GET /api/v1/health`
+  - `POST /api/v1/chat`
+  - `POST /api/v1/chat/stream`
 
 ## 技术栈
-- 前端：React 18 + TypeScript + Vite
-- 后端：FastAPI + LangChain + DeepSeek(OpenAI-Compatible)
-- 数据与缓存：PostgreSQL + Redis
-- 部署：Docker Compose
 
-## 目录结构
+- 前端：React 18 + TypeScript + Vite
+- 后端：FastAPI + LangChain + LangChain OpenAI Compatible
+- 模型：DeepSeek（聊天）+ `text-embedding-v4`（向量）
+- 数据：PostgreSQL
+- 向量库：Chroma
+- 会话记忆：Redis
+
+## 项目结构
+
 ```text
 .
-├── frontend/                # Web 前端
-├── backend/                 # FastAPI 后端
-├── docs/                    # 需求、计划、协作文档
-├── docker-compose.yml       # 本地容器编排
+├── frontend/                          # Web 前端（单页聊天）
+├── backend/                           # FastAPI 后端
+│   ├── app/
+│   │   ├── api/                       # /chat /chat/stream /health
+│   │   ├── services/                  # qa_service / retrieval_service / redis_history
+│   │   └── core/                      # settings
+│   └── scripts/
+│       ├── ingest_standards_meta_to_chroma.py
+│       └── test_chroma_vectors.py
+├── docs/                              # 需求、方案、执行计划文档
+├── docker-compose.yml
 └── README.md
 ```
 
-## 快速开始
+## 快速开始（本地开发）
 
-### 方式一：Docker（推荐）
-```bash
-cd "/Users/lfc/Documents/New project"
-docker compose up --build
-```
+### 1. 启动后端
 
-启动后访问：
-- Frontend: `http://localhost:5173`
-- Backend: `http://localhost:8000`
-- Health: `http://localhost:8000/api/v1/health`
-
-### 方式二：本地开发
-
-后端：
 ```bash
 cd "/Users/lfc/Documents/New project/backend"
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# 编辑 .env，至少配置 DEEPSEEK_API_KEY
+# 编辑 .env，至少配置：
+# DEEPSEEK_API_KEY
+# EMBEDDING_API_KEY
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-前端：
+### 2. 启动前端
+
 ```bash
 cd "/Users/lfc/Documents/New project/frontend"
-cp .env.example .env
 npm install
 npm run dev
 ```
 
-## 环境变量说明（后端）
-核心变量见 `backend/.env.example`：
-- `DEEPSEEK_API_KEY`：DeepSeek API 密钥
-- `DEEPSEEK_MODEL`：默认 `deepseek-chat`
-- `DEEPSEEK_BASE_URL`：默认 `https://api.deepseek.com/v1`
-- `REDIS_URL`：默认 `redis://localhost:6379/0`
-- `MEMORY_KEY_PREFIX`：记忆键前缀
-- `MEMORY_TTL_SECONDS`：记忆过期秒数
-- `MEMORY_MAX_MESSAGES`：单会话最大消息数
+访问地址：
 
-## API 概览
-- `GET /api/v1/health`：服务健康检查
-- `POST /api/v1/chat`：非流式问答
-- `POST /api/v1/chat/stream`：SSE 流式问答
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:8000`
+- Health: `http://localhost:8000/api/v1/health`
 
-## 开发与文档
-- 执行型开发计划：`docs/标准智能助手当前执行开发计划（逐步明细）.md`
+## RAG 数据准备（必须）
+
+向量化脚本会读取 `drms_standard_middle_sync`，将元信息写入 Chroma。
+
+```bash
+cd "/Users/lfc/Documents/New project/backend"
+# 首次建议先导入 10000 条做验证
+python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
+```
+
+当前向量文本字段包含：
+
+- `a100` 标准号
+- `a298` 标准名称
+- `a101` 发布日期
+- `a205` 实施日期
+- `a206` 作废日期
+- `a000` / `a200` 标准状态
+- `a825cn` 中国标准分类（中文）
+- `a826cn` 国际标准分类（中文）
+- `a330` 适用范围
+
+## 向量检索验证
+
+```bash
+cd "/Users/lfc/Documents/New project/backend"
+python scripts/test_chroma_vectors.py --query "GB 2626 的适用范围是什么？" --top-k 5
+```
+
+验证重点：
+
+- `Vector count` 是否大于 0
+- TopK 是否命中相关标准
+- 输出中是否包含 `a330`
+
+## API 调用示例
+
+### 非流式
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "demo_user",
+    "session_id": "demo_session",
+    "query": "GB 2626 的适用范围是什么？"
+  }'
+```
+
+### 流式（SSE）
+
+```bash
+curl -N http://127.0.0.1:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "demo_user",
+    "session_id": "demo_session",
+    "query": "食品安全相关标准有哪些？"
+  }'
+```
+
+`citations` 当前字段说明：
+
+- `standard_code`：标准号（来源 `a100`）
+- `version`：发布日期（来源 `a101`）
+- `clause`：标准名称（来源 `a298`）
+- `scope`：适用范围（来源 `a330`）
+
+## 关键环境变量（后端）
+
+请参考 `backend/.env.example`，重点如下：
+
+- `DEEPSEEK_API_KEY`
+- `DEEPSEEK_MODEL`
+- `DEEPSEEK_BASE_URL`
+- `EMBEDDING_API_KEY`
+- `EMBEDDING_MODEL`
+- `EMBEDDING_BASE_URL`
+- `CHROMA_PERSIST_DIR`
+- `CHROMA_COLLECTION`
+- `RAG_TOP_K`
+- `REDIS_URL`
+- `MEMORY_TTL_SECONDS`
+- `MEMORY_MAX_MESSAGES`
+
+## 文档
+
+- 执行跟踪：`docs/标准智能助手当前执行开发计划（逐步明细）.md`
+- RAG 方案：`docs/标准知识检索RAG接入方案与资料清单.md`
 - 需求与技术方案：`docs/标准智能助手需求与技术方案.md`
-- 前后端细化计划：`docs/标准智能助手前后端详细开发计划.md`
-- RAG 接入方案与资料清单：`docs/标准知识检索RAG接入方案与资料清单.md`
-- GitHub 提交指南：`docs/GitHub提交与协作指南.md`
+- 前后端详细计划：`docs/标准智能助手前后端详细开发计划.md`
+- GitHub 协作指南：`docs/GitHub提交与协作指南.md`
 
 ## 开源协议
-本项目使用 [MIT License](./LICENSE)。
 
-## 贡献说明
-欢迎 Issue 和 Pull Request。建议流程：
-1. 从 `main` 新建功能分支（例如 `codex/feature-name`）。
-2. 完成功能后提交 PR，并附上变更说明与测试结果。
-3. 合并前确保不提交敏感信息（如 `.env`）。
+本项目采用 [MIT License](./LICENSE)。
 
-## 安全说明
-- 请勿将真实 API Key 提交到仓库。
-- 如果密钥曾经泄露，请立即在供应商控制台轮换。
+## 安全提示
+
+- 不要提交真实密钥（`.env` 不应入库）。
+- 若密钥泄露，请立即在供应商控制台轮换。
