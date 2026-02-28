@@ -14,9 +14,6 @@ from langchain_openai import ChatOpenAI
 from redis import Redis
 
 from app.core.settings import (
-    get_deepseek_api_key,
-    get_deepseek_base_url,
-    get_deepseek_model,
     get_llm_temperature,
     get_llm_timeout_seconds,
     get_memory_key_prefix,
@@ -24,6 +21,7 @@ from app.core.settings import (
     get_memory_ttl_seconds,
     get_redis_url,
 )
+from app.services.model_service import resolve_chat_model
 from app.services.redis_history import RedisChatMessageHistory
 from app.services.retrieval_service import RetrievedStandard, build_retrieval_context, retrieve_standards
 
@@ -55,6 +53,9 @@ class QAResult:
     citations: list[CitationPayload]
     action: Literal["continue", "clarify"]
     retrieved_count: int
+    model_id: str
+    model_name: str
+    provider: str
 
 
 @dataclass
@@ -65,6 +66,9 @@ class QAStreamResult:
     citations: list[CitationPayload]
     action: Literal["continue", "clarify"]
     retrieved_count: int
+    model_id: str
+    model_name: str
+    provider: str
 
 
 def _safe_text(value: object) -> str:
@@ -119,14 +123,19 @@ def _decide_action(citations: list[CitationPayload]) -> Literal["continue", "cla
     return "continue" if citations else "clarify"
 
 
-@lru_cache(maxsize=1)
-def get_llm() -> ChatOpenAI:
-    """获取大模型客户端（单例缓存）。"""
+@lru_cache(maxsize=8)
+def get_llm(model_id: str) -> ChatOpenAI:
+    """按模型 ID 获取大模型客户端（多模型缓存）。"""
 
+    model_config = resolve_chat_model(model_id)
+    if not model_config.api_key:
+        raise ValueError(
+            f"模型 `{model_config.model_id}` 缺少 API Key，请检查环境变量配置。"
+        )
     return ChatOpenAI(
-        model=get_deepseek_model(),
-        api_key=get_deepseek_api_key(),
-        base_url=get_deepseek_base_url(),
+        model=model_config.model_name,
+        api_key=model_config.api_key,
+        base_url=model_config.base_url,
         temperature=get_llm_temperature(),
         timeout=get_llm_timeout_seconds(),
     )
@@ -151,9 +160,9 @@ def _get_session_history(session_key: str) -> BaseChatMessageHistory:
     )
 
 
-@lru_cache(maxsize=1)
-def get_memory_chain() -> RunnableWithMessageHistory:
-    """构建带 Memory 的问答链路（Prompt -> LLM -> 文本解析）。"""
+@lru_cache(maxsize=8)
+def get_memory_chain(model_id: str) -> RunnableWithMessageHistory:
+    """按模型 ID 构建带 Memory 的问答链路（Prompt -> LLM -> 文本解析）。"""
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -170,7 +179,7 @@ def get_memory_chain() -> RunnableWithMessageHistory:
         ]
     )
 
-    base_chain = prompt | get_llm() | StrOutputParser()
+    base_chain = prompt | get_llm(model_id) | StrOutputParser()
     return RunnableWithMessageHistory(
         base_chain,
         _get_session_history,
@@ -179,15 +188,16 @@ def get_memory_chain() -> RunnableWithMessageHistory:
     )
 
 
-def ask_standard_assistant(query: str, session_key: str) -> QAResult:
+def ask_standard_assistant(query: str, session_key: str, model_id: str | None = None) -> QAResult:
     """非流式问答：先检索，再生成，最终返回回答与引用。"""
 
+    model_config = resolve_chat_model(model_id)
     retrieved_records = retrieve_standards(query=query)
     retrieved_context = build_retrieval_context(retrieved_records)
     citations = _build_citations(retrieved_records)
     action = _decide_action(citations)
 
-    result = get_memory_chain().invoke(
+    result = get_memory_chain(model_config.model_id).invoke(
         {
             "query": query,
             "retrieved_context": retrieved_context,
@@ -203,18 +213,24 @@ def ask_standard_assistant(query: str, session_key: str) -> QAResult:
         citations=citations,
         action=action,
         retrieved_count=len(retrieved_records),
+        model_id=model_config.model_id,
+        model_name=model_config.display_name,
+        provider=model_config.provider,
     )
 
 
-def stream_standard_assistant(query: str, session_key: str) -> QAStreamResult:
+def stream_standard_assistant(
+    query: str, session_key: str, model_id: str | None = None
+) -> QAStreamResult:
     """流式问答：先检索，再生成流式分片，最后回传引用。"""
 
+    model_config = resolve_chat_model(model_id)
     retrieved_records = retrieve_standards(query=query)
     retrieved_context = build_retrieval_context(retrieved_records)
     citations = _build_citations(retrieved_records)
     action = _decide_action(citations)
 
-    chain = get_memory_chain()
+    chain = get_memory_chain(model_config.model_id)
 
     def _stream() -> Iterator[str]:
         """内部流式迭代器：逐块输出模型文本。"""
@@ -233,4 +249,7 @@ def stream_standard_assistant(query: str, session_key: str) -> QAStreamResult:
         citations=citations,
         action=action,
         retrieved_count=len(retrieved_records),
+        model_id=model_config.model_id,
+        model_name=model_config.display_name,
+        provider=model_config.provider,
     )

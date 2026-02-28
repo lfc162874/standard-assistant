@@ -4,6 +4,7 @@ export interface ChatRequest {
   user_id: string;
   session_id: string;
   query: string;
+  model_id?: string;
 }
 
 export interface Citation {
@@ -26,6 +27,7 @@ export interface StreamMetaEvent {
   type: "meta";
   trace_id: string;
   timestamp: string;
+  requested_model_id?: string | null;
 }
 
 export interface StreamDeltaEvent {
@@ -49,3 +51,15 @@ export type ChatStreamEvent =
   | StreamDeltaEvent
   | StreamDoneEvent
   | StreamErrorEvent;
+
+export interface ModelOption {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  model_name: string;
+}
+
+export interface ModelListResponse {
+  default_model_id: string;
+  models: ModelOption[];
+}

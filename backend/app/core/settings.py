@@ -28,6 +28,26 @@ def get_deepseek_base_url() -> str:
     return os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip()
 
 
+def get_qwen_api_key() -> str:
+    """读取 Qwen API Key（可选）。"""
+
+    return os.getenv("QWEN_API_KEY", "").strip()
+
+
+def get_qwen_model() -> str:
+    """读取 Qwen 模型名。"""
+
+    return os.getenv("QWEN_MODEL", "qwen-plus").strip()
+
+
+def get_qwen_base_url() -> str:
+    """读取 Qwen 接口地址。"""
+
+    return os.getenv(
+        "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ).strip()
+
+
 def get_llm_temperature() -> float:
     """读取并解析 LLM temperature。"""
 
@@ -126,3 +146,20 @@ def get_rag_top_k() -> int:
     if value <= 0:
         raise ValueError("RAG_TOP_K must be positive")
     return value
+
+
+def get_default_chat_model_id() -> str:
+    """读取默认聊天模型 ID。"""
+
+    return os.getenv("DEFAULT_CHAT_MODEL_ID", "deepseek-chat").strip()
+
+
+def get_chat_enabled_models() -> list[str]:
+    """读取启用的模型 ID 列表（逗号分隔）。"""
+
+    raw_value = os.getenv(
+        "CHAT_ENABLED_MODELS", "deepseek-chat,deepseek-reasoner,qwen-plus"
+    ).strip()
+    if not raw_value:
+        return []
+    return [item.strip() for item in raw_value.split(",") if item.strip()]

@@ -1,4 +1,9 @@
-import type { ChatRequest, ChatResponse, ChatStreamEvent } from "../types/chat";
+import type {
+  ChatRequest,
+  ChatResponse,
+  ChatStreamEvent,
+  ModelListResponse,
+} from "../types/chat";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -40,6 +45,14 @@ export async function getHealth(): Promise<{ status: string }> {
     await parseError(response);
   }
   return (await response.json()) as { status: string };
+}
+
+export async function getModels(): Promise<ModelListResponse> {
+  const response = await fetch(buildUrl("/api/v1/models"));
+  if (!response.ok) {
+    await parseError(response);
+  }
+  return (await response.json()) as ModelListResponse;
 }
 
 export async function postChat(payload: ChatRequest): Promise<ChatResponse> {

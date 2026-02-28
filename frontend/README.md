@@ -12,7 +12,7 @@ Default URL: `http://localhost:5173`
 
 ## Backend integration notes
 
-- Frontend uses `/api` proxy to `http://localhost:8000` in dev mode.
+- Frontend uses `/api` proxy to `http://127.0.0.1:8000` in dev mode.
 - You can override proxy target by editing `VITE_DEV_PROXY_TARGET` in `.env`.
 - Ensure backend is running before testing chat requests.
 - Health check endpoint used by the page: `GET /api/v1/health`

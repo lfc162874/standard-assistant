@@ -14,6 +14,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ## Endpoints
 
 - `GET /api/v1/health`
+- `GET /api/v1/models` (可切换模型列表)
 - `POST /api/v1/chat`
 - `POST /api/v1/chat/stream` (SSE 流式输出)
 
@@ -32,6 +33,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `CHROMA_PERSIST_DIR`
 - `CHROMA_COLLECTION`
 - `RAG_TOP_K`
+- `QWEN_API_KEY`
+- `QWEN_MODEL`
+- `QWEN_BASE_URL`
+- `DEFAULT_CHAT_MODEL_ID`
+- `CHAT_ENABLED_MODELS`
 
 快速验证（非流式）：
 
@@ -41,6 +47,7 @@ curl -s http://127.0.0.1:8000/api/v1/chat \
   -d '{
     "user_id": "demo_user",
     "session_id": "demo_session",
+    "model_id": "deepseek-chat",
     "query": "GB 2626 的发布日期是什么？"
   }'
 ```
@@ -49,6 +56,12 @@ curl -s http://127.0.0.1:8000/api/v1/chat \
 - `answer`：大模型回答
 - `citations`：检索命中的标准引用（不应长期为空）
 - `data.retrieved_count`：本次检索命中条数
+- `data.model_id` / `data.model_name`：本次实际生效模型
+
+可选模型示例：
+- `deepseek-chat`
+- `deepseek-reasoner`
+- `qwen-plus`
 
 ## Memory behavior
 
@@ -125,3 +138,42 @@ python scripts/test_chroma_vectors.py --query "国际标准分类里和电气有
   - 向量文本模板是否缺少关键信息
   - 输入数据是否包含空值/脏值
   - 集合是否导入了正确数据（`--truncate` 后重跑）
+
+## Step 10.5 评测与调优
+
+### 1) 准备评测样本
+
+使用模板：
+
+```bash
+cp ../docs/eval_questions_template.csv ../docs/eval_questions_v1.csv
+```
+
+按需编辑 `eval_questions_v1.csv`，核心字段：
+- `query`：问题
+- `expected_standard_codes`：期望标准号（多个用 `|` 分隔）
+- `expected_keywords`：期望关键词（多个用 `|` 分隔）
+
+### 2) 运行自动评测
+
+```bash
+python scripts/evaluate_rag.py \
+  --input ../docs/eval_questions_v1.csv \
+  --base-url http://127.0.0.1:8000 \
+  --output-dir ./eval_reports
+```
+
+### 3) 输出结果
+
+脚本会输出三份文件：
+- `rag_eval_report_*.json`：完整结果（含每条样本）
+- `rag_eval_report_*.md`：汇总报告
+- `rag_eval_detail_*.csv`：逐条明细，便于错例复盘
+
+### 4) 重点指标解释
+
+- `top1_hit_rate`：期望标准号是否命中第一条 citation
+- `topk_hit_rate`：期望标准号是否命中 citations 列表任一项
+- `citation_coverage_rate`：回答含 citation 的比例
+- `clarify_rate`：返回 `action=clarify` 的比例
+- `p95_latency_ms`：95 分位时延

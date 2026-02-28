@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.services.model_service import UnsupportedModelError
 from app.services.qa_service import ask_standard_assistant, stream_standard_assistant
 
 router = APIRouter()
@@ -20,6 +21,7 @@ class ChatRequest(BaseModel):
     user_id: str = Field(..., min_length=1)
     session_id: str = Field(..., min_length=1)
     query: str = Field(..., min_length=1)
+    model_id: str | None = None
 
 
 class Citation(BaseModel):
@@ -56,7 +58,16 @@ def chat(payload: ChatRequest) -> ChatResponse:
     memory_session_key = f"{payload.user_id}:{payload.session_id}"
     try:
         # 服务层统一完成：向量检索 + Prompt 组装 + LLM 生成。
-        qa_result = ask_standard_assistant(payload.query, memory_session_key)
+        qa_result = ask_standard_assistant(
+            payload.query,
+            memory_session_key,
+            payload.model_id,
+        )
+    except UnsupportedModelError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"模型选择错误: {exc}",
+        ) from exc
     except ValueError as exc:
         # 配置类错误（例如缺少 API Key）直接返回 500，便于联调快速定位。
         raise HTTPException(
@@ -85,8 +96,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
             "intent": "clause_qa",
             "session_id": payload.session_id,
             "user_id": payload.user_id,
-            "provider": "deepseek+chroma",
+            "provider": f"{qa_result.provider}+chroma",
             "retrieved_count": qa_result.retrieved_count,
+            "model_id": qa_result.model_id,
+            "model_name": qa_result.model_name,
         },
         action=qa_result.action,
         trace_id=trace_id,
@@ -109,12 +122,18 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 "type": "meta",
                 "trace_id": trace_id,
                 "timestamp": timestamp,
+                "requested_model_id": payload.model_id,
             }
         )
 
         answer_parts: list[str] = []
+        stream_result = None
         try:
-            stream_result = stream_standard_assistant(payload.query, memory_session_key)
+            stream_result = stream_standard_assistant(
+                payload.query,
+                memory_session_key,
+                payload.model_id,
+            )
             for delta in stream_result.chunks:
                 answer_parts.append(delta)
                 yield _sse(
@@ -123,6 +142,16 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                         "content": delta,
                     }
                 )
+        except UnsupportedModelError as exc:
+            yield _sse(
+                {
+                    "type": "error",
+                    "status": 400,
+                    "error": f"模型选择错误: {exc}",
+                    "trace_id": trace_id,
+                }
+            )
+            return
         except ValueError as exc:
             yield _sse(
                 {
@@ -147,6 +176,16 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
         answer = "".join(answer_parts).strip()
         if not answer:
             answer = "没有生成有效回答，请重试。"
+        if stream_result is None:
+            yield _sse(
+                {
+                    "type": "error",
+                    "status": 500,
+                    "error": "流式结果为空",
+                    "trace_id": trace_id,
+                }
+            )
+            return
 
         # 结束包提供与非流式接口一致的关键字段，便于前端统一渲染。
         yield _sse(
@@ -166,8 +205,10 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                         "intent": "clause_qa",
                         "session_id": payload.session_id,
                         "user_id": payload.user_id,
-                        "provider": "deepseek+chroma",
+                        "provider": f"{stream_result.provider}+chroma",
                         "retrieved_count": stream_result.retrieved_count,
+                        "model_id": stream_result.model_id,
+                        "model_name": stream_result.model_name,
                     },
                     "action": stream_result.action,
                     "trace_id": trace_id,

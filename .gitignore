@@ -30,3 +30,7 @@ dist/
 # Local vector store
 chroma_data/
 backend/chroma_data/
+
+# Evaluation outputs
+eval_reports/
+backend/eval_reports/

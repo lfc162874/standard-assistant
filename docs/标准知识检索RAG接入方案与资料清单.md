@@ -156,7 +156,7 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 - 子步骤 10.2 已完成。
 - 子步骤 10.3 已完成（数据向量化阶段完成）。
 - 子步骤 10.4 已完成（问答链路接入 + citations 输出 + 前端展示适用范围）。
-- 当前进入子步骤 10.5（评测与参数调优）。
+- 子步骤 10.5 评测工具已落地，但本轮迭代按决策暂时跳过执行。
 
 ### 子步骤 10.1：从 PostgreSQL 读取元信息
 - 输入：`drms_standard_middle_sync` 表。
@@ -195,6 +195,10 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 - 输入：固定问题集。
 - 输出：评测报告（准确率/引用率/响应时延）。
 - 验收：达到阶段目标后进入 Step 11。
+- 当前状态：本轮已跳过（工具已准备，后续可随时恢复执行）。
+- 已有实现文件：
+  - `backend/scripts/evaluate_rag.py`
+  - `docs/eval_questions_template.csv`
 
 ## 5. 验收指标（Step 10）
 - 准确率（离线问题集）>= 80%
