@@ -24,3 +24,71 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Memory key uses `user_id + session_id` with prefix `MEMORY_KEY_PREFIX`.
 - Reusing the same `session_id` preserves context; creating a new `session_id` starts a new conversation.
 - Session history expires by `MEMORY_TTL_SECONDS`, and list length is capped by `MEMORY_MAX_MESSAGES`.
+
+## Metadata Vector Ingest (PostgreSQL -> Chroma)
+
+脚本位置：`scripts/ingest_standards_meta_to_chroma.py`
+
+1) 在 `.env` 中配置：
+- `PG_HOST=localhost`
+- `PG_PORT=5432`
+- `PG_USER=postgres`
+- `PG_PASSWORD=123456`
+- `PG_DATABASE=postgres`（按你的实际库名改）
+- `PG_SCHEMA=public`
+- `PG_TABLE=drms_standard_middle_sync`
+- `EMBEDDING_API_KEY=<你的线上 embedding key>`
+- `EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`
+- `EMBEDDING_MODEL=text-embedding-v4`
+- `CHROMA_PERSIST_DIR=./chroma_data`
+- `CHROMA_COLLECTION=standards_meta_v1`
+
+2) 首次全量入库（清空并重建集合）：
+
+```bash
+python scripts/ingest_standards_meta_to_chroma.py --truncate
+```
+
+3) 指定测试数据量（例如先导入 10000 条）：
+
+```bash
+python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
+```
+
+说明：
+- 该脚本不依赖 `is_deleted` 字段。
+- 该脚本不依赖 `update_time` 字段。
+- 当前写入向量的元信息文本包含：`a100/a298/a101/a205/a206/a000/a200/a825cn/a826cn`。
+- 向量 ID 规则：`<table>:<id>`，重复执行会做 upsert（覆盖同 ID）。
+
+常见报错排查：
+- 如果出现 `InvalidParameter: input.contents`，通常是 embedding 服务不接受非字符串或 token-array 输入。
+- 当前脚本已内置兼容策略：优先批量请求，失败后自动降级为逐条字符串请求。
+
+## How To Test Vector Data
+
+### 1) Verify count after ingest
+
+```bash
+python scripts/test_chroma_vectors.py --query "口罩相关标准有哪些？" --top-k 5
+```
+
+输出里会看到：
+- `Vector count`：集合内总向量条数
+- TopK 命中项：`id / distance / a100 / a298 / a101 / a825cn / a826cn`
+
+### 2) Recommended test questions
+
+```bash
+python scripts/test_chroma_vectors.py --query "GB 2626 的发布日期是什么？" --top-k 5
+python scripts/test_chroma_vectors.py --query "食品安全相关国家标准有哪些？" --top-k 5
+python scripts/test_chroma_vectors.py --query "国际标准分类里和电气有关的标准有哪些？" --top-k 5
+```
+
+### 3) What counts as a pass (quick check)
+- 结果中应出现语义相关标准，且 `a100/a298` 可读。
+- `distance` 越小通常越相关（同一模型与同一集合内可横向比较）。
+- 若命中明显不相关，先检查：
+  - 向量文本模板是否缺少关键信息
+  - 输入数据是否包含空值/脏值
+  - 集合是否导入了正确数据（`--truncate` 后重跑）
