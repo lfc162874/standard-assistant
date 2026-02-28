@@ -1,5 +1,10 @@
+from __future__ import annotations
+
+"""问答服务：负责将检索结果、会话记忆与大模型生成串成完整 RAG 链路。"""
+
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterator
+from typing import Iterator, Literal
 
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
@@ -20,20 +25,104 @@ from app.core.settings import (
     get_redis_url,
 )
 from app.services.redis_history import RedisChatMessageHistory
+from app.services.retrieval_service import RetrievedStandard, build_retrieval_context, retrieve_standards
 
 SYSTEM_PROMPT = """
 你是“标准智能助手”。
-你的职责：
-1. 基于用户问题给出清晰、准确、简洁的回答。
-2. 在无法确认事实时明确说明“不确定”，并建议用户补充标准编号或上下文。
-3. 不要编造不存在的标准编号、条款或实施日期。
-4. 输出使用中文。
+请遵循以下规则回答：
+1. 优先基于“检索上下文”回答，不要编造不存在的标准信息。
+2. 如果检索上下文不足以支撑结论，明确说明信息不足，并提示用户补充标准号或关键词。
+3. 回答语言使用中文，表达简洁清晰。
+4. 回答中尽量引用标准号与标准名称。
 """.strip()
+
+
+@dataclass
+class CitationPayload:
+    """接口返回的引用结构（保持与前端现有协议兼容）。"""
+
+    standard_code: str
+    version: str
+    clause: str
+    scope: str
+
+
+@dataclass
+class QAResult:
+    """非流式问答结果。"""
+
+    answer: str
+    citations: list[CitationPayload]
+    action: Literal["continue", "clarify"]
+    retrieved_count: int
+
+
+@dataclass
+class QAStreamResult:
+    """流式问答结果（包含流式分片迭代器与最终引用信息）。"""
+
+    chunks: Iterator[str]
+    citations: list[CitationPayload]
+    action: Literal["continue", "clarify"]
+    retrieved_count: int
+
+
+def _safe_text(value: object) -> str:
+    """统一安全转字符串。"""
+
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _build_citations(records: list[RetrievedStandard], max_items: int = 5) -> list[CitationPayload]:
+    """从检索命中结果构造引用列表。"""
+
+    citations: list[CitationPayload] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for record in records:
+        metadata = record.metadata
+        standard_code = _safe_text(metadata.get("a100"))
+        standard_name = _safe_text(metadata.get("a298"))
+        publish_date = _safe_text(metadata.get("a101"))
+        scope = _safe_text(metadata.get("a330"))
+
+        if not standard_code and not standard_name:
+            continue
+
+        dedup_key = (standard_code, standard_name, publish_date)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        citations.append(
+            CitationPayload(
+                standard_code=standard_code or "未知标准号",
+                # 现阶段沿用原有字段命名 `version`，内容填发布日期，避免前端协议破坏。
+                version=publish_date or "发布日期未知",
+                # 现阶段沿用原有字段命名 `clause`，内容填标准名称。
+                clause=standard_name or "标准名称未知",
+                # 新增 `scope` 字段，展示标准适用范围（a330）。
+                scope=scope or "适用范围未知",
+            )
+        )
+        if len(citations) >= max_items:
+            break
+
+    return citations
+
+
+def _decide_action(citations: list[CitationPayload]) -> Literal["continue", "clarify"]:
+    """根据是否有引用决定 action。"""
+
+    return "continue" if citations else "clarify"
 
 
 @lru_cache(maxsize=1)
 def get_llm() -> ChatOpenAI:
-    # 复用同一个 LLM 客户端，避免每次请求重复初始化连接与配置。
+    """获取大模型客户端（单例缓存）。"""
+
     return ChatOpenAI(
         model=get_deepseek_model(),
         api_key=get_deepseek_api_key(),
@@ -45,11 +134,14 @@ def get_llm() -> ChatOpenAI:
 
 @lru_cache(maxsize=1)
 def get_redis_client() -> Redis:
-    # decode_responses=True: Redis 直接返回字符串，简化 JSON 序列化处理。
+    """获取 Redis 客户端（单例缓存）。"""
+
     return Redis.from_url(get_redis_url(), decode_responses=True)
 
 
 def _get_session_history(session_key: str) -> BaseChatMessageHistory:
+    """按会话键返回 Redis 持久化历史。"""
+
     return RedisChatMessageHistory(
         redis_client=get_redis_client(),
         session_key=session_key,
@@ -61,15 +153,23 @@ def _get_session_history(session_key: str) -> BaseChatMessageHistory:
 
 @lru_cache(maxsize=1)
 def get_memory_chain() -> RunnableWithMessageHistory:
+    """构建带 Memory 的问答链路（Prompt -> LLM -> 文本解析）。"""
+
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
             MessagesPlaceholder(variable_name="history"),
-            ("human", "{query}"),
+            (
+                "human",
+                (
+                    "用户问题：\n{query}\n\n"
+                    "检索上下文：\n{retrieved_context}\n\n"
+                    "请只依据检索上下文与对话历史回答。"
+                ),
+            ),
         ]
     )
 
-    # Prompt -> LLM -> 文本解析；通过 RunnableWithMessageHistory 自动维护历史消息。
     base_chain = prompt | get_llm() | StrOutputParser()
     return RunnableWithMessageHistory(
         base_chain,
@@ -79,22 +179,58 @@ def get_memory_chain() -> RunnableWithMessageHistory:
     )
 
 
-def ask_standard_assistant(query: str, session_key: str) -> str:
-    chain = get_memory_chain()
-    result = chain.invoke(
-        {"query": query},
+def ask_standard_assistant(query: str, session_key: str) -> QAResult:
+    """非流式问答：先检索，再生成，最终返回回答与引用。"""
+
+    retrieved_records = retrieve_standards(query=query)
+    retrieved_context = build_retrieval_context(retrieved_records)
+    citations = _build_citations(retrieved_records)
+    action = _decide_action(citations)
+
+    result = get_memory_chain().invoke(
+        {
+            "query": query,
+            "retrieved_context": retrieved_context,
+        },
         config={"configurable": {"session_id": session_key}},
     )
     answer = result.strip()
-    return answer if answer else "没有生成有效回答，请重试。"
+    if not answer:
+        answer = "没有生成有效回答，请重试。"
+
+    return QAResult(
+        answer=answer,
+        citations=citations,
+        action=action,
+        retrieved_count=len(retrieved_records),
+    )
 
 
-def stream_standard_assistant(query: str, session_key: str) -> Iterator[str]:
-    # 流式输出同样走带记忆的链路，确保多轮上下文对齐。
+def stream_standard_assistant(query: str, session_key: str) -> QAStreamResult:
+    """流式问答：先检索，再生成流式分片，最后回传引用。"""
+
+    retrieved_records = retrieve_standards(query=query)
+    retrieved_context = build_retrieval_context(retrieved_records)
+    citations = _build_citations(retrieved_records)
+    action = _decide_action(citations)
+
     chain = get_memory_chain()
-    for chunk in chain.stream(
-        {"query": query},
-        config={"configurable": {"session_id": session_key}},
-    ):
-        if chunk:
-            yield chunk
+
+    def _stream() -> Iterator[str]:
+        """内部流式迭代器：逐块输出模型文本。"""
+        for chunk in chain.stream(
+            {
+                "query": query,
+                "retrieved_context": retrieved_context,
+            },
+            config={"configurable": {"session_id": session_key}},
+        ):
+            if chunk:
+                yield chunk
+
+    return QAStreamResult(
+        chunks=_stream(),
+        citations=citations,
+        action=action,
+        retrieved_count=len(retrieved_records),
+    )

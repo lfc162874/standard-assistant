@@ -299,7 +299,8 @@ export default function App() {
                 <ul className="citation-list">
                   {message.result.citations.map((citation, index) => (
                     <li key={`${citation.standard_code}-${index}`}>
-                      {citation.standard_code} {citation.version} · 条款 {citation.clause}
+                      <div>{citation.standard_code}（{citation.version}） · 名称 {citation.clause}</div>
+                      <div>适用范围：{citation.scope || "适用范围未知"}</div>
                     </li>
                   ))}
                 </ul>

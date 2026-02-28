@@ -1,3 +1,5 @@
+"""聊天接口：提供非流式与流式问答接口。"""
+
 from datetime import datetime, timezone
 import json
 from typing import Literal
@@ -13,18 +15,25 @@ router = APIRouter()
 
 
 class ChatRequest(BaseModel):
+    """聊天请求体。"""
+
     user_id: str = Field(..., min_length=1)
     session_id: str = Field(..., min_length=1)
     query: str = Field(..., min_length=1)
 
 
 class Citation(BaseModel):
+    """引用信息（与前端显示字段保持一致）。"""
+
     standard_code: str
     version: str
     clause: str
+    scope: str
 
 
 class ChatResponse(BaseModel):
+    """聊天响应体。"""
+
     answer: str
     citations: list[Citation]
     data: dict
@@ -34,16 +43,20 @@ class ChatResponse(BaseModel):
 
 
 def _sse(data: dict) -> str:
+    """将对象编码为 SSE data 块。"""
+
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
+    """非流式问答接口。"""
+
     trace_id = str(uuid4())
     memory_session_key = f"{payload.user_id}:{payload.session_id}"
     try:
-        # 统一由服务层处理 LangChain + DeepSeek 调用。
-        answer = ask_standard_assistant(payload.query, memory_session_key)
+        # 服务层统一完成：向量检索 + Prompt 组装 + LLM 生成。
+        qa_result = ask_standard_assistant(payload.query, memory_session_key)
     except ValueError as exc:
         # 配置类错误（例如缺少 API Key）直接返回 500，便于联调快速定位。
         raise HTTPException(
@@ -58,15 +71,24 @@ def chat(payload: ChatRequest) -> ChatResponse:
         ) from exc
 
     return ChatResponse(
-        answer=answer,
-        citations=[],
+        answer=qa_result.answer,
+        citations=[
+            Citation(
+                standard_code=item.standard_code,
+                version=item.version,
+                clause=item.clause,
+                scope=item.scope,
+            )
+            for item in qa_result.citations
+        ],
         data={
             "intent": "clause_qa",
             "session_id": payload.session_id,
             "user_id": payload.user_id,
-            "provider": "deepseek",
+            "provider": "deepseek+chroma",
+            "retrieved_count": qa_result.retrieved_count,
         },
-        action="continue",
+        action=qa_result.action,
         trace_id=trace_id,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
@@ -74,6 +96,8 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
 @router.post("/chat/stream")
 def chat_stream(payload: ChatRequest) -> StreamingResponse:
+    """流式问答接口（SSE）。"""
+
     trace_id = str(uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
     memory_session_key = f"{payload.user_id}:{payload.session_id}"
@@ -90,7 +114,8 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
 
         answer_parts: list[str] = []
         try:
-            for delta in stream_standard_assistant(payload.query, memory_session_key):
+            stream_result = stream_standard_assistant(payload.query, memory_session_key)
+            for delta in stream_result.chunks:
                 answer_parts.append(delta)
                 yield _sse(
                     {
@@ -125,20 +150,29 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
 
         # 结束包提供与非流式接口一致的关键字段，便于前端统一渲染。
         yield _sse(
-            {
-                "type": "done",
-                "answer": answer,
-                "citations": [],
-                "data": {
-                    "intent": "clause_qa",
-                    "session_id": payload.session_id,
-                    "user_id": payload.user_id,
-                    "provider": "deepseek",
-                },
-                "action": "continue",
-                "trace_id": trace_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
+                {
+                    "type": "done",
+                    "answer": answer,
+                    "citations": [
+                        {
+                            "standard_code": item.standard_code,
+                            "version": item.version,
+                            "clause": item.clause,
+                            "scope": item.scope,
+                        }
+                        for item in stream_result.citations
+                    ],
+                    "data": {
+                        "intent": "clause_qa",
+                        "session_id": payload.session_id,
+                        "user_id": payload.user_id,
+                        "provider": "deepseek+chroma",
+                        "retrieved_count": stream_result.retrieved_count,
+                    },
+                    "action": stream_result.action,
+                    "trace_id": trace_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
         )
 
     return StreamingResponse(

@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 """
-PostgreSQL metadata -> Embedding -> Chroma ingest script.
+标准元信息向量化脚本（PostgreSQL -> Embedding -> Chroma）。
 
-What this script does:
-1) Read rows from table `drms_standard_middle_sync`.
-2) Build one metadata document per row from selected fields.
-3) Call embedding model (text-embedding-v4) to get vectors.
-4) Upsert vectors/documents/metadata into local Chroma collection.
+脚本职责：
+1. 从 `drms_standard_middle_sync` 读取标准元信息。
+2. 将每条记录拼成一段可向量化文本。
+3. 调用 `text-embedding-v4` 生成向量。
+4. 将向量与元数据写入本地 Chroma 集合。
 
-Notes:
-- Does NOT rely on `is_deleted` or `update_time`.
-- Supports `--count` so you can ingest a subset (e.g. 10000 rows) for testing.
+注意：
+- 不依赖 `is_deleted` / `update_time` 字段。
+- 支持 `--count`，可先导入部分数据（例如 10000 条）验证效果。
 """
 
 import argparse
@@ -31,9 +31,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 
-# Fields used to build vectorized text content.
-# Left value = source column name in PostgreSQL
-# Right value = human-readable label included in the document text
+# 用于构造向量文本的字段：
+# 左侧是 PostgreSQL 字段名，右侧是拼装到文本中的中文标签。
 CONTENT_FIELDS = [
     ("a100", "标准号"),
     ("a298", "标准名称"),
@@ -44,9 +43,10 @@ CONTENT_FIELDS = [
     ("a200", "标准细分状态"),
     ("a825cn", "中国标准分类（中文）"),
     ("a826cn", "国际标准分类（中文）"),
+    ("a330", "适用范围"),
 ]
 
-# Fields copied into Chroma metadata for filtering / display / tracing.
+# 写入 Chroma metadata 的字段（用于展示、筛选、追踪）。
 METADATA_FIELDS = [
     "id",
     "a100",
@@ -58,28 +58,29 @@ METADATA_FIELDS = [
     "a200",
     "a825cn",
     "a826cn",
+    "a330",
 ]
 
 
 @dataclass
 class RuntimeConfig:
-    """Runtime config assembled from CLI args + environment variables."""
+    """运行配置：由命令行参数与环境变量共同组成。"""
 
-    # PostgreSQL connection and table location
+    # PostgreSQL 连接与数据表位置
     pg_dsn: str
     pg_schema: str
     pg_table: str
 
-    # Chroma storage location and collection name
+    # Chroma 持久化目录与集合名
     chroma_dir: str
     chroma_collection: str
 
-    # Embedding provider settings
+    # Embedding 服务配置
     embedding_api_key: str
     embedding_base_url: str
     embedding_model: str
 
-    # Ingest behavior
+    # 导入行为参数
     batch_size: int
     count: int | None
     truncate: bool
@@ -87,14 +88,14 @@ class RuntimeConfig:
 
 
 def build_pg_dsn() -> str:
-    """Build psycopg DSN string from `PG_DSN` or split PG_* env variables."""
+    """构造 psycopg DSN：优先读取 `PG_DSN`，否则使用 PG_* 拼接。"""
 
-    # Highest priority: explicit DSN (single variable).
+    # 最高优先级：直接使用显式 DSN。
     dsn = os.getenv("PG_DSN", "").strip()
     if dsn:
         return dsn
 
-    # Fallback: compose DSN from host/port/user/password/database.
+    # 兜底方案：从 host/port/user/password/database 拼接 DSN。
     host = os.getenv("PG_HOST", "localhost").strip()
     port = os.getenv("PG_PORT", "5432").strip()
     user = os.getenv("PG_USER", "postgres").strip()
@@ -106,7 +107,7 @@ def build_pg_dsn() -> str:
 
 
 def parse_args() -> RuntimeConfig:
-    """Parse CLI arguments and build final runtime configuration."""
+    """解析命令行参数并生成最终运行配置。"""
 
     parser = argparse.ArgumentParser(
         description=(
@@ -115,7 +116,7 @@ def parse_args() -> RuntimeConfig:
         )
     )
 
-    # Support both INGEST_COUNT (new) and INGEST_LIMIT (legacy alias).
+    # 同时兼容新参数 INGEST_COUNT 与旧参数 INGEST_LIMIT。
     default_count = int(
         os.getenv("INGEST_COUNT", os.getenv("INGEST_LIMIT", "0")).strip() or 0
     ) or None
@@ -129,7 +130,7 @@ def parse_args() -> RuntimeConfig:
         "--limit",
         type=int,
         dest="count",
-        # Keep old CLI name for backward compatibility, but hide from help output.
+        # 兼容历史命令参数，但不在帮助信息中展示。
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
@@ -149,7 +150,7 @@ def parse_args() -> RuntimeConfig:
     )
     args = parser.parse_args()
 
-    # Basic argument guards to fail fast with clear errors.
+    # 参数基础校验，避免进入主流程后才报错。
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
     if args.count is not None and args.count <= 0:
@@ -174,22 +175,22 @@ def parse_args() -> RuntimeConfig:
 
 
 def normalize_value(value: Any) -> str:
-    """Normalize DB values to clean strings used by documents/metadata."""
+    """标准化字段值，统一转成可写入文本/metadata 的字符串。"""
 
-    # None means empty.
+    # 空值直接返回空字符串。
     if value is None:
         return ""
-    # Convert datetime to readable string.
+    # datetime 统一转为可读时间字符串。
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="seconds")
-    # Default conversion for all other types.
+    # 其他类型统一转字符串并去除首尾空格。
     return str(value).strip()
 
 
 def get_existing_columns(
     connection: psycopg.Connection[Any], schema: str, table: str
 ) -> set[str]:
-    """Read existing column names from information_schema for safety checks."""
+    """读取表的实际字段名，用于后续动态选列和安全校验。"""
 
     sql_text = """
     SELECT column_name
@@ -203,24 +204,24 @@ def get_existing_columns(
 
 
 def build_document(row: dict[str, Any], available_fields: list[tuple[str, str]]) -> str:
-    """Build one text document from a row using configured content fields."""
+    """将单行记录按模板字段拼装成一段向量文本。"""
 
     lines: list[str] = []
     for field, label in available_fields:
         value = normalize_value(row.get(field))
-        # Skip empty values to keep text concise.
+        # 空值不写入，减少噪声。
         if value:
             lines.append(f"{label}: {value}")
     return "\n".join(lines)
 
 
 def build_metadata(row: dict[str, Any], available_metadata_fields: list[str]) -> dict[str, Any]:
-    """Build Chroma metadata payload for a row."""
+    """构造 Chroma metadata 字典。"""
 
     metadata: dict[str, Any] = {}
     for field in available_metadata_fields:
         value = normalize_value(row.get(field))
-        # Keep metadata compact: do not store empty values.
+        # metadata 中不保留空值，避免冗余。
         if value:
             metadata[field] = value
     return metadata
@@ -228,24 +229,24 @@ def build_metadata(row: dict[str, Any], available_metadata_fields: list[str]) ->
 
 def embed_documents_safe(embeddings: OpenAIEmbeddings, texts: list[str]) -> list[list[float]]:
     """
-    Generate embeddings with provider compatibility fallback.
+    生成向量（带兼容降级策略）。
 
-    Why:
-    - Some OpenAI-compatible services reject certain batch payload formats and return:
-      InvalidParameter / input.contents.
-    Strategy:
-    - Try `embed_documents` first (faster, batched).
-    - If provider rejects payload format, fallback to `embed_query` per text.
+    背景：
+    - 某些 OpenAI 兼容服务会拒绝批量请求并返回
+      `InvalidParameter / input.contents`。
+    策略：
+    - 先尝试 `embed_documents` 批量向量化。
+    - 如遇兼容错误，自动降级为逐条 `embed_query`。
     """
 
-    # Enforce list[str] to avoid accidental non-string payload types.
+    # 强制转为字符串列表，避免非字符串输入导致接口报错。
     normalized_texts = [text if isinstance(text, str) else str(text) for text in texts]
     try:
-        # Preferred path: batch embedding for better throughput.
+        # 首选路径：批量处理，吞吐更高。
         return embeddings.embed_documents(normalized_texts)
     except Exception as exc:
         error_message = str(exc)
-        # If it's not the known provider compatibility error, re-raise directly.
+        # 非已知兼容错误，直接抛出，避免吞掉真实问题。
         if "input.contents" not in error_message and "InvalidParameter" not in error_message:
             raise
 
@@ -255,7 +256,7 @@ def embed_documents_safe(embeddings: OpenAIEmbeddings, texts: list[str]) -> list
         )
         vectors: list[list[float]] = []
         for text in normalized_texts:
-            # Compatibility path: embed one text at a time.
+            # 兼容路径：逐条向量化。
             vectors.append(embeddings.embed_query(text))
         return vectors
 
@@ -266,19 +267,19 @@ def get_select_query(
     table: str,
     count: int | None,
 ) -> tuple[sql.Composed, list[Any]]:
-    """Build SELECT query safely via psycopg sql.Identifier."""
+    """构造安全的查询语句（使用 sql.Identifier 防注入）。"""
 
-    # Select only needed columns to reduce I/O and memory overhead.
+    # 只查询必要字段，降低 IO 与内存占用。
     query = sql.SQL("SELECT {fields} FROM {table}").format(
         fields=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
         table=sql.Identifier(schema, table),
     )
     params: list[Any] = []
 
-    # Stable order for deterministic ingest.
+    # 固定按 id 升序，保证导入顺序可复现。
     query += sql.SQL(" ORDER BY {column} ASC").format(column=sql.Identifier("id"))
 
-    # Optional row cap for controlled test imports.
+    # 可选导入条数限制，便于分批测试。
     if count:
         query += sql.SQL(" LIMIT %s")
         params.append(count)
@@ -287,44 +288,44 @@ def get_select_query(
 
 
 def get_collection(client: chromadb.PersistentClient, name: str, truncate: bool):
-    """Get or create Chroma collection; optionally delete previous one first."""
+    """获取或创建 Chroma 集合；可选先删除旧集合。"""
 
     if truncate:
         try:
             client.delete_collection(name)
             print(f"[INFO] Existing collection deleted: {name}")
         except Exception:
-            # Collection may not exist on first run.
+            # 首次运行可能不存在旧集合，忽略即可。
             pass
     return client.get_or_create_collection(name=name)
 
 
 def main() -> int:
-    """Main workflow: load config, read DB rows, embed, upsert to Chroma."""
+    """主流程：加载配置 -> 读库 -> 向量化 -> 写入 Chroma。"""
 
-    # Load env from backend/.env first, then fallback to current working dir .env.
+    # 优先加载 backend/.env，随后再加载当前目录 .env（兼容不同启动路径）。
     backend_env_path = Path(__file__).resolve().parents[1] / ".env"
     load_dotenv(backend_env_path)
     load_dotenv()
     config = parse_args()
 
-    # In dry-run mode, embedding key is not required.
+    # dry-run 只验证读取与拼装流程，不强制要求 embedding key。
     if not config.dry_run and not config.embedding_api_key:
         raise ValueError("Missing environment variable: EMBEDDING_API_KEY")
 
     embeddings: OpenAIEmbeddings | None = None
     if not config.dry_run:
-        # Create embedding client (OpenAI-compatible API).
+        # 创建 embedding 客户端（OpenAI 兼容接口）。
         embeddings = OpenAIEmbeddings(
             model=config.embedding_model,
             api_key=config.embedding_api_key,
             base_url=config.embedding_base_url,
-            # For some OpenAI-compatible providers, token-array input is rejected.
+            # 某些兼容服务不接受 token-array 输入，显式关闭相关行为。
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
         )
 
-    # Create local persistent Chroma client and target collection.
+    # 创建本地持久化 Chroma 客户端并定位目标集合。
     chroma_client = chromadb.PersistentClient(path=config.chroma_dir)
     collection = get_collection(
         client=chroma_client,
@@ -335,9 +336,9 @@ def main() -> int:
     total_rows = 0
     total_upserted = 0
 
-    # Open PostgreSQL connection and stream rows in batches.
+    # 打开 PostgreSQL 连接并按批次拉取数据。
     with psycopg.connect(config.pg_dsn) as connection:
-        # Read real table columns first to avoid selecting non-existent columns.
+        # 先读取真实字段，避免查询不存在的列。
         existing_columns = get_existing_columns(
             connection=connection,
             schema=config.pg_schema,
@@ -351,14 +352,14 @@ def main() -> int:
         if "id" not in existing_columns:
             raise ValueError("The source table must contain an `id` column.")
 
-        # Keep only fields that actually exist in this DB table.
+        # 仅保留数据库中真实存在的字段。
         available_content_fields = [
             field_pair for field_pair in CONTENT_FIELDS if field_pair[0] in existing_columns
         ]
         available_metadata_fields = [
             field for field in METADATA_FIELDS if field in existing_columns
         ]
-        # Build deduplicated select column list.
+        # 构造去重后的查询字段集合。
         select_columns = sorted(
             {field for field, _ in available_content_fields}
             | set(available_metadata_fields)
@@ -372,7 +373,7 @@ def main() -> int:
                 + ", ".join(field for field, _ in CONTENT_FIELDS)
             )
 
-        # Build parameterized query.
+        # 生成参数化查询语句。
         select_query, params = get_select_query(
             columns=select_columns,
             schema=config.pg_schema,
@@ -384,50 +385,50 @@ def main() -> int:
         if config.count:
             print(f"[INFO] Row count limit: {config.count}")
 
-        # Use dict rows so columns are accessible by name.
+        # 用字典行，便于按字段名取值。
         with connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(select_query, params)
 
-            # Fetch data chunk by chunk to control memory usage.
+            # 分批读取，控制内存占用。
             while True:
                 rows = cursor.fetchmany(config.batch_size)
                 if not rows:
                     break
 
-                # Chroma upsert payload arrays (same order/length required).
+                # 组织 Chroma upsert 所需数组（必须一一对应）。
                 ids: list[str] = []
                 documents: list[str] = []
                 metadatas: list[dict[str, Any]] = []
 
                 for row in rows:
                     total_rows += 1
-                    # Build one text document from selected metadata fields.
+                    # 将该行数据拼成可向量化文本。
                     doc_text = build_document(row=row, available_fields=available_content_fields)
                     if not doc_text:
                         continue
 
-                    # Ensure every vector record has deterministic unique id.
+                    # 每条记录必须有稳定且唯一的向量 ID。
                     row_id = normalize_value(row.get("id"))
                     if not row_id:
                         continue
 
-                    # Record id format: <table>:<id>
+                    # 向量 ID 格式：<table>:<id>
                     ids.append(f"{config.pg_table}:{row_id}")
                     documents.append(doc_text)
 
-                    # Attach original metadata fields for later display/filtering.
+                    # 附加 metadata，供后续结果展示与过滤使用。
                     metadata = build_metadata(
                         row=row, available_metadata_fields=available_metadata_fields
                     )
                     metadata["source_table"] = f"{config.pg_schema}.{config.pg_table}"
                     metadatas.append(metadata)
 
-                # If this chunk has no valid documents, skip it.
+                # 当前批次没有可写入记录时直接跳过。
                 if not ids:
                     continue
 
                 if config.dry_run:
-                    # Dry-run only validates read/build logic, no embedding/no upsert.
+                    # dry-run 只验证读取与拼装，不做向量化与写入。
                     total_upserted += len(ids)
                     print(
                         f"[DRY-RUN] processed={total_rows} prepared_upsert={total_upserted}"
@@ -437,7 +438,7 @@ def main() -> int:
                 if embeddings is None:
                     raise RuntimeError("Embedding client is not initialized.")
 
-                # Generate embeddings and upsert into Chroma.
+                # 生成向量并 upsert 到 Chroma。
                 vectors = embed_documents_safe(embeddings=embeddings, texts=documents)
                 collection.upsert(
                     ids=ids,
@@ -451,7 +452,7 @@ def main() -> int:
                     f"batch={len(ids)}"
                 )
 
-    # Final summary.
+    # 输出最终导入统计。
     print(
         f"[DONE] source_rows={total_rows} vectorized_docs={total_upserted} "
         f"collection={config.chroma_collection}"
@@ -461,13 +462,13 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        # Normal exit path.
+        # 正常执行路径。
         raise SystemExit(main())
     except KeyboardInterrupt:
-        # User interrupted with Ctrl+C.
+        # 用户手动中断（Ctrl+C）。
         print("\n[INFO] Interrupted by user.")
         raise SystemExit(130)
     except Exception as exc:
-        # Print concise error to stderr for shell visibility.
+        # 错误输出到 stderr，方便命令行与日志定位。
         print(f"[ERROR] {exc}", file=sys.stderr)
         raise SystemExit(1)

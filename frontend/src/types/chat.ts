@@ -10,6 +10,7 @@ export interface Citation {
   standard_code: string;
   version: string;
   clause: string;
+  scope: string;
 }
 
 export interface ChatResponse {

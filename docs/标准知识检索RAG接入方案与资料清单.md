@@ -88,6 +88,7 @@ flowchart TD
 - `a000` / `a200`：标准状态
 - `a825cn`：中国标准分类（中文）
 - `a826cn`：国际标准分类（中文）
+- `a330`：适用范围
 
 向量文本拼装模板（每条标准一条 document）：
 ```text
@@ -100,13 +101,14 @@ flowchart TD
 细分状态: {a200}
 中国标准分类（中文）: {a825cn}
 国际标准分类（中文）: {a826cn}
+适用范围: {a330}
 ```
 
 Chroma 存储约定：
 - `collection`: `standards_meta_v1`
 - `id`: `drms_standard_middle_sync:{id}`
 - `document`: 上述模板拼装结果
-- `metadata`: `id/a100/a298/a101/a205/a206/a000/a200/a825cn/a826cn/source_table`
+- `metadata`: `id/a100/a298/a101/a205/a206/a000/a200/a825cn/a826cn/a330/source_table`
 
 ### 2.8 已落地脚本（可直接执行）
 - 脚本路径：`backend/scripts/ingest_standards_meta_to_chroma.py`
@@ -132,7 +134,7 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 ## 3.1 P0（必须先提供）
 1. PostgreSQL 连接信息（host/port/db/user/password 或 DSN）。
 2. 表名确认：`drms_standard_middle_sync`。
-3. 字段确认：`a101`、`a825cn`、`a826cn`（以及 `a100`、`a298`）。
+3. 字段确认：`a101`、`a825cn`、`a826cn`、`a330`（以及 `a100`、`a298`）。
 4. 一组业务高频问题（至少 50 条）：
    - 真实提问方式
    - 期望回答方向
@@ -153,12 +155,13 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 - 子步骤 10.1 已完成。
 - 子步骤 10.2 已完成。
 - 子步骤 10.3 已完成（数据向量化阶段完成）。
-- 当前进入子步骤 10.4（问答链路接入与 citations 输出）。
+- 子步骤 10.4 已完成（问答链路接入 + citations 输出 + 前端展示适用范围）。
+- 当前进入子步骤 10.5（评测与参数调优）。
 
 ### 子步骤 10.1：从 PostgreSQL 读取元信息
 - 输入：`drms_standard_middle_sync` 表。
 - 输出：待向量化记录集（不依赖 `is_deleted` 字段）。
-- 验收：可稳定读出 `a100/a298/a101/a825cn/a826cn` 字段。
+- 验收：可稳定读出 `a100/a298/a101/a825cn/a826cn/a330` 字段。
 - 当前状态：已完成。
 
 ### 子步骤 10.2：构造元信息 document
@@ -180,7 +183,13 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 - 输入：Chroma 检索结果 + 用户问题 + 会话历史。
 - 输出：回答 + `citations`（标准号/标准名称/发布日期/分类）。
 - 验收：有引用回答占比 >= 90%（MVP门槛）。
-- 当前状态：进行中。
+- 当前状态：已完成。
+- 已有实现文件：
+  - `backend/app/services/retrieval_service.py`
+  - `backend/app/services/qa_service.py`
+  - `backend/app/api/chat.py`
+  - `frontend/src/App.tsx`
+  - `frontend/src/types/chat.ts`
 
 ### 子步骤 10.5：回归测试与参数调优
 - 输入：固定问题集。

@@ -26,3 +26,7 @@ dist/
 
 # Logs
 *.log
+
+# Local vector store
+chroma_data/
+backend/chroma_data/
