@@ -1,0 +1,42 @@
+services:
+  app:
+    build:
+      context: ./backend
+    container_name: standard-assistant-app
+    env_file:
+      - ./backend/.env.example
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  web:
+    build:
+      context: ./frontend
+    container_name: standard-assistant-web
+    ports:
+      - "5173:80"
+    depends_on:
+      - app
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: standard-assistant-postgres
+    environment:
+      POSTGRES_DB: standard_assistant
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: standard-assistant-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
