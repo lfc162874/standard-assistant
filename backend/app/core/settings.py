@@ -163,3 +163,76 @@ def get_chat_enabled_models() -> list[str]:
     if not raw_value:
         return []
     return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def get_db_url() -> str:
+    """读取 PostgreSQL 连接地址。"""
+
+    return os.getenv(
+        "DB_URL", "postgresql://postgres:postgres@localhost:5432/standard_assistant"
+    ).strip()
+
+
+def get_jwt_secret_key() -> str:
+    """读取 JWT 签名密钥。"""
+
+    return os.getenv("JWT_SECRET_KEY", "change-me-in-production").strip()
+
+
+def get_access_token_expire_minutes() -> int:
+    """读取 Access Token 过期分钟数。"""
+
+    raw_value = os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30").strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES must be an integer") from exc
+    if value <= 0:
+        raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES must be positive")
+    return value
+
+
+def get_refresh_token_expire_days() -> int:
+    """读取 Refresh Token 过期天数。"""
+
+    raw_value = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "14").strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("REFRESH_TOKEN_EXPIRE_DAYS must be an integer") from exc
+    if value <= 0:
+        raise ValueError("REFRESH_TOKEN_EXPIRE_DAYS must be positive")
+    return value
+
+
+def get_auth_register_enabled() -> bool:
+    """读取是否允许注册。"""
+
+    raw_value = os.getenv("AUTH_REGISTER_ENABLED", "true").strip().lower()
+    return raw_value in {"1", "true", "yes", "on"}
+
+
+def get_login_max_retries() -> int:
+    """读取登录失败锁定阈值。"""
+
+    raw_value = os.getenv("LOGIN_MAX_RETRIES", "5").strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("LOGIN_MAX_RETRIES must be an integer") from exc
+    if value <= 0:
+        raise ValueError("LOGIN_MAX_RETRIES must be positive")
+    return value
+
+
+def get_login_lock_minutes() -> int:
+    """读取登录锁定分钟数。"""
+
+    raw_value = os.getenv("LOGIN_LOCK_MINUTES", "15").strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("LOGIN_LOCK_MINUTES must be an integer") from exc
+    if value <= 0:
+        raise ValueError("LOGIN_LOCK_MINUTES must be positive")
+    return value

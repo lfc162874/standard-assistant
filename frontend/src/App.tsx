@@ -1,8 +1,15 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import MarkdownContent from "./components/MarkdownContent";
-import { ApiError, getHealth, getModels, postChatStream } from "./services/api";
+import ProtectedRoute from "./components/ProtectedRoute";
+import LoginPage from "./pages/LoginPage";
+import ProfilePage from "./pages/ProfilePage";
+import RegisterPage from "./pages/RegisterPage";
+import { bootstrapAuthSession, changeMyPassword, login, logout, register, updateMe } from "./services/auth";
+import { getHealth, getModels, postChatStream } from "./services/api";
+import { getAuthSnapshot, subscribeAuthStore } from "./store/authStore";
 import type { ChatResponse, ModelOption } from "./types/chat";
+import { ApiError } from "./services/http";
 import "./styles.css";
 
 type ChatMessage =
@@ -16,7 +23,6 @@ type ChatMessage =
     }
   | { id: string; role: "system"; content: string };
 
-const USER_ID = "demo_user";
 const SESSION_KEY = "standard_assistant_session_id";
 
 type BackendStatus = "checking" | "online" | "offline";
@@ -91,6 +97,13 @@ function readCitationCodes(result?: ChatResponse): string[] {
 }
 
 export default function App() {
+  const auth = useSyncExternalStore(subscribeAuthStore, getAuthSnapshot);
+
+  const [authScreen, setAuthScreen] = useState<"login" | "register" | "chat" | "profile">("login");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authSuccess, setAuthSuccess] = useState("");
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>("checking");
@@ -110,9 +123,22 @@ export default function App() {
   const formRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
+    void bootstrapAuthSession();
+  }, []);
+
+  useEffect(() => {
     void checkBackendHealth();
     void loadModels();
   }, []);
+
+  useEffect(() => {
+    if (!auth.initialized) return;
+    if (!auth.user) {
+      setAuthScreen((prev) => (prev === "register" ? "register" : "login"));
+      return;
+    }
+    setAuthScreen((prev) => (prev === "profile" ? "profile" : "chat"));
+  }, [auth.initialized, auth.user]);
 
   useEffect(() => {
     const list = chatListRef.current;
@@ -215,6 +241,117 @@ export default function App() {
     ]);
   }
 
+  async function handleLogin(payload: { username: string; password: string }) {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      await login(payload);
+      setAuthScreen("chat");
+    } catch (error) {
+      const detail =
+        error instanceof ApiError
+          ? `${error.detail}（HTTP ${error.status}）`
+          : error instanceof Error
+            ? error.message
+            : "未知错误";
+      setAuthError(detail);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleRegister(payload: {
+    username: string;
+    password: string;
+    nickname?: string;
+    email?: string;
+    phone?: string;
+  }) {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      await register(payload);
+      setAuthSuccess("注册成功，请使用新账号登录。");
+      setAuthScreen("login");
+    } catch (error) {
+      const detail =
+        error instanceof ApiError
+          ? `${error.detail}（HTTP ${error.status}）`
+          : error instanceof Error
+            ? error.message
+            : "未知错误";
+      setAuthError(detail);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      await logout();
+      setMessages([
+        {
+          id: createMessageId(),
+          role: "system",
+          content: "你好，我是标准智能助手。你可以直接问标准条款、状态或版本差异。",
+        },
+      ]);
+      setAuthScreen("login");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleUpdateProfile(payload: {
+    nickname?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    avatar_url?: string | null;
+  }) {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      await updateMe(payload);
+      setAuthSuccess("资料已更新");
+    } catch (error) {
+      const detail =
+        error instanceof ApiError
+          ? `${error.detail}（HTTP ${error.status}）`
+          : error instanceof Error
+            ? error.message
+            : "未知错误";
+      setAuthError(detail);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleChangePassword(payload: { old_password: string; new_password: string }) {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      await changeMyPassword(payload);
+      setAuthSuccess("密码已更新");
+    } catch (error) {
+      const detail =
+        error instanceof ApiError
+          ? `${error.detail}（HTTP ${error.status}）`
+          : error instanceof Error
+            ? error.message
+            : "未知错误";
+      setAuthError(detail);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const query = input.trim();
@@ -234,7 +371,6 @@ export default function App() {
     try {
       await postChatStream(
         {
-          user_id: USER_ID,
           session_id: sessionId,
           query,
           model_id: selectedModelId || undefined,
@@ -302,6 +438,10 @@ export default function App() {
         ]);
       }
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        await handleLogout();
+        return;
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -340,7 +480,63 @@ export default function App() {
   const totalMessages = userMessageCount + assistantMessageCount;
   const welcomeMode = totalMessages === 0;
 
+  if (!auth.initialized) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card compact">
+          <h1>正在初始化登录状态</h1>
+          <p className="auth-sub">请稍候，正在恢复会话...</p>
+        </section>
+      </main>
+    );
+  }
+
+  const authFallback =
+    authScreen === "register" ? (
+      <RegisterPage
+        loading={authLoading}
+        error={authError}
+        onSubmit={handleRegister}
+        onSwitchToLogin={() => {
+          setAuthError("");
+          setAuthSuccess("");
+          setAuthScreen("login");
+        }}
+      />
+    ) : (
+      <LoginPage
+        loading={authLoading}
+        error={authError}
+        success={authSuccess}
+        onSubmit={handleLogin}
+        onSwitchToRegister={() => {
+          setAuthError("");
+          setAuthSuccess("");
+          setAuthScreen("register");
+        }}
+      />
+    );
+
+  if (auth.user && authScreen === "profile") {
+    return (
+      <ProfilePage
+        user={auth.user}
+        loading={authLoading}
+        error={authError}
+        success={authSuccess}
+        onBack={() => {
+          setAuthError("");
+          setAuthSuccess("");
+          setAuthScreen("chat");
+        }}
+        onUpdateProfile={handleUpdateProfile}
+        onChangePassword={handleChangePassword}
+      />
+    );
+  }
+
   return (
+    <ProtectedRoute isAuthenticated={Boolean(auth.user)} fallback={authFallback}>
     <main className="q-layout">
       <div className="q-top-line" aria-hidden="true" />
 
@@ -414,7 +610,7 @@ export default function App() {
             SA
           </div>
           <div className="workspace-info">
-            <p className="workspace-title">我的空间</p>
+            <p className="workspace-title">{auth.user?.nickname || auth.user?.username || "我的空间"}</p>
             <p className="workspace-meta">
               {statusLabel(backendStatus)} · {selectedModel?.display_name || "未选择"}
             </p>
@@ -444,8 +640,14 @@ export default function App() {
           <div className="topbar-right">
             <span className="meta-chip">连接 {statusLabel(backendStatus)}</span>
             <span className="meta-chip">检索 {latestRetrievedCount}</span>
+            <button type="button" className="ghost-btn" onClick={() => setAuthScreen("profile")}>
+              个人资料
+            </button>
             <button type="button" className="ghost-btn" onClick={clearMessages}>
               清空消息
+            </button>
+            <button type="button" className="ghost-btn" onClick={handleLogout}>
+              退出登录
             </button>
           </div>
         </header>
@@ -586,5 +788,6 @@ export default function App() {
         </footer>
       </section>
     </main>
+    </ProtectedRoute>
   );
 }

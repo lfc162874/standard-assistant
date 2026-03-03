@@ -1,24 +1,31 @@
 """聊天接口：提供非流式与流式问答接口。"""
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 import json
-from typing import Literal
+import logging
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.services.auth_service import SessionOwnershipError, get_current_user
 from app.services.model_service import UnsupportedModelError
 from app.services.qa_service import ask_standard_assistant, stream_standard_assistant
+from app.services.user_service import UserRecord, ensure_session_owner
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
     """聊天请求体。"""
 
-    user_id: str = Field(..., min_length=1)
+    # 兼容字段：保留 14 天过渡窗口，实际逻辑完全忽略。
+    user_id: str | None = Field(default=None)
     session_id: str = Field(..., min_length=1)
     query: str = Field(..., min_length=1)
     model_id: str | None = None
@@ -50,12 +57,27 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _build_memory_session_key(current_user: UserRecord, payload: ChatRequest) -> str:
+    if payload.user_id:
+        logger.warning("deprecated_field.chat.user_id_received value=%s", payload.user_id)
+
+    try:
+        ensure_session_owner(current_user.id, payload.session_id)
+    except SessionOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    return f"{current_user.id}:{payload.session_id}"
+
+
 @router.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
+def chat(
+    payload: ChatRequest,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> ChatResponse:
     """非流式问答接口。"""
 
     trace_id = str(uuid4())
-    memory_session_key = f"{payload.user_id}:{payload.session_id}"
+    memory_session_key = _build_memory_session_key(current_user, payload)
     try:
         # 服务层统一完成：向量检索 + Prompt 组装 + LLM 生成。
         qa_result = ask_standard_assistant(
@@ -74,6 +96,8 @@ def chat(payload: ChatRequest) -> ChatResponse:
             status_code=500,
             detail=f"模型配置错误: {exc}",
         ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         # 远端模型调用失败使用 502，表示上游服务异常。
         raise HTTPException(
@@ -95,7 +119,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
         data={
             "intent": "clause_qa",
             "session_id": payload.session_id,
-            "user_id": payload.user_id,
+            "user_id": current_user.id,
             "provider": f"{qa_result.provider}+chroma",
             "retrieved_count": qa_result.retrieved_count,
             "model_id": qa_result.model_id,
@@ -108,12 +132,15 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
 
 @router.post("/chat/stream")
-def chat_stream(payload: ChatRequest) -> StreamingResponse:
+def chat_stream(
+    payload: ChatRequest,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> StreamingResponse:
     """流式问答接口（SSE）。"""
 
     trace_id = str(uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
-    memory_session_key = f"{payload.user_id}:{payload.session_id}"
+    memory_session_key = _build_memory_session_key(current_user, payload)
 
     def generate():
         # 首包先给元信息，前端可用于追踪当前请求。
@@ -189,31 +216,31 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
 
         # 结束包提供与非流式接口一致的关键字段，便于前端统一渲染。
         yield _sse(
-                {
-                    "type": "done",
-                    "answer": answer,
-                    "citations": [
-                        {
-                            "standard_code": item.standard_code,
-                            "version": item.version,
-                            "clause": item.clause,
-                            "scope": item.scope,
-                        }
-                        for item in stream_result.citations
-                    ],
-                    "data": {
-                        "intent": "clause_qa",
-                        "session_id": payload.session_id,
-                        "user_id": payload.user_id,
-                        "provider": f"{stream_result.provider}+chroma",
-                        "retrieved_count": stream_result.retrieved_count,
-                        "model_id": stream_result.model_id,
-                        "model_name": stream_result.model_name,
-                    },
-                    "action": stream_result.action,
-                    "trace_id": trace_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+            {
+                "type": "done",
+                "answer": answer,
+                "citations": [
+                    {
+                        "standard_code": item.standard_code,
+                        "version": item.version,
+                        "clause": item.clause,
+                        "scope": item.scope,
+                    }
+                    for item in stream_result.citations
+                ],
+                "data": {
+                    "intent": "clause_qa",
+                    "session_id": payload.session_id,
+                    "user_id": current_user.id,
+                    "provider": f"{stream_result.provider}+chroma",
+                    "retrieved_count": stream_result.retrieved_count,
+                    "model_id": stream_result.model_id,
+                    "model_name": stream_result.model_name,
+                },
+                "action": stream_result.action,
+                "trace_id": trace_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
         )
 
     return StreamingResponse(

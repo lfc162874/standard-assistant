@@ -15,6 +15,13 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 - `GET /api/v1/health`
 - `GET /api/v1/models` (可切换模型列表)
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/users/me`
+- `PATCH /api/v1/users/me`
+- `POST /api/v1/users/me/password`
 - `POST /api/v1/chat`
 - `POST /api/v1/chat/stream` (SSE 流式输出)
 
@@ -39,13 +46,32 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `DEFAULT_CHAT_MODEL_ID`
 - `CHAT_ENABLED_MODELS`
 
-快速验证（非流式）：
+快速验证（先登录，再调用 chat）：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "demo_user",
+    "password": "demo_pass_123",
+    "nickname": "演示用户"
+  }'
+```
+
+```bash
+ACCESS_TOKEN=$(curl -s http://127.0.0.1:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "demo_user",
+    "password": "demo_pass_123"
+  }' | python -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+```
 
 ```bash
 curl -s http://127.0.0.1:8000/api/v1/chat \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -d '{
-    "user_id": "demo_user",
     "session_id": "demo_session",
     "model_id": "deepseek-chat",
     "query": "GB 2626 的发布日期是什么？"
@@ -67,7 +93,7 @@ curl -s http://127.0.0.1:8000/api/v1/chat \
 
 - Chat memory is enabled via LangChain `RunnableWithMessageHistory`.
 - Memory backend is Redis (not local in-process memory).
-- Memory key uses `user_id + session_id` with prefix `MEMORY_KEY_PREFIX`.
+- Memory key uses `<authenticated user_id> + session_id` with prefix `MEMORY_KEY_PREFIX`.
 - Reusing the same `session_id` preserves context; creating a new `session_id` starts a new conversation.
 - Session history expires by `MEMORY_TTL_SECONDS`, and list length is capped by `MEMORY_MAX_MESSAGES`.
 

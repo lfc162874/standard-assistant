@@ -933,3 +933,151 @@ textarea:focus-visible,
     scroll-behavior: auto !important;
   }
 }
+
+.auth-shell,
+.profile-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-card,
+.profile-card {
+  width: min(560px, 100%);
+  border: 1px solid var(--line-main);
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 22px;
+  box-shadow: 0 26px 52px -40px rgba(47, 62, 108, 0.55);
+  padding: 24px;
+}
+
+.auth-card.compact {
+  width: min(460px, 100%);
+}
+
+.auth-card h1,
+.profile-head h1 {
+  margin: 0;
+  font-size: 30px;
+  color: #1c253a;
+}
+
+.auth-sub,
+.profile-meta {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--text-sub);
+}
+
+.auth-form,
+.profile-form {
+  margin-top: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.auth-form label,
+.profile-form label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2d3854;
+}
+
+.auth-form input,
+.profile-form input {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid #d4daeb;
+  padding: 0 12px;
+  font-size: 15px;
+  color: #1f2840;
+  background: #fff;
+}
+
+.auth-form input:focus,
+.profile-form input:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(74, 98, 255, 0.15);
+}
+
+.auth-primary-btn {
+  min-height: 46px;
+  border-radius: 12px;
+  border: 1px solid #354fe0;
+  background: linear-gradient(140deg, #4f67ff 0%, #3652e8 100%);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-primary-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.auth-link-btn {
+  margin-top: 14px;
+  border: 0;
+  background: transparent;
+  color: #3d56df;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-error,
+.auth-success {
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.auth-error {
+  background: #fdeced;
+  color: #a52733;
+  border: 1px solid #f7c3c8;
+}
+
+.auth-error.global {
+  margin-top: 14px;
+}
+
+.auth-success {
+  margin-top: 14px;
+  background: #edf8f0;
+  color: #1d7a3a;
+  border: 1px solid #b6e2c1;
+}
+
+.profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-form h2 {
+  margin: 6px 0 2px;
+  font-size: 19px;
+  color: #263250;
+}
+
+@media (max-width: 780px) {
+  .auth-shell,
+  .profile-shell {
+    padding: 14px;
+  }
+
+  .auth-card,
+  .profile-card {
+    border-radius: 18px;
+    padding: 16px;
+  }
+}

@@ -1,7 +1,6 @@
 export type ActionType = "continue" | "clarify";
 
 export interface ChatRequest {
-  user_id: string;
   session_id: string;
   query: string;
   model_id?: string;
