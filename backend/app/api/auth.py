@@ -23,7 +23,9 @@ class RegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=8, max_length=128)
+    # 登录阶段不限制最小长度，避免历史账号/测试账号在请求层被 422 拦截。
+    # 密码强度要求在注册/改密时控制。
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class RefreshRequest(BaseModel):

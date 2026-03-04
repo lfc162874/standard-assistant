@@ -1,6 +1,8 @@
 """配置读取模块：统一从环境变量读取后端运行所需参数。"""
 
 import os
+import re
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -165,12 +167,176 @@ def get_chat_enabled_models() -> list[str]:
     return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
-def get_db_url() -> str:
-    """读取 PostgreSQL 连接地址。"""
+def get_glm_ocr_api_key() -> str:
+    """读取 GLM-OCR API Key。"""
 
-    return os.getenv(
-        "DB_URL", "postgresql://postgres:postgres@localhost:5432/standard_assistant"
-    ).strip()
+    api_key = os.getenv("GLM_OCR_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Missing GLM_OCR_API_KEY")
+    return api_key
+
+
+def get_glm_ocr_base_url() -> str:
+    """读取 GLM-OCR 接口地址。"""
+
+    return os.getenv("GLM_OCR_BASE_URL", "https://open.bigmodel.cn/api/paas/v4").strip()
+
+
+def get_glm_ocr_model() -> str:
+    """读取 GLM-OCR 模型名。"""
+
+    return os.getenv("GLM_OCR_MODEL", "glm-4.1v-thinking-flash").strip()
+
+
+def get_upload_max_bytes() -> int:
+    """读取上传文件大小上限（字节）。"""
+
+    raw_value = os.getenv("UPLOAD_MAX_BYTES", str(5 * 1024 * 1024)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("UPLOAD_MAX_BYTES must be an integer") from exc
+    if value <= 0:
+        raise ValueError("UPLOAD_MAX_BYTES must be positive")
+    return value
+
+
+def get_upload_max_text_chars() -> int:
+    """读取上传文本可解析字符上限。"""
+
+    raw_value = os.getenv("UPLOAD_MAX_TEXT_CHARS", "60000").strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("UPLOAD_MAX_TEXT_CHARS must be an integer") from exc
+    if value <= 0:
+        raise ValueError("UPLOAD_MAX_TEXT_CHARS must be positive")
+    return value
+
+
+def get_upload_allowed_text_exts() -> list[str]:
+    """读取允许上传的文本扩展名。"""
+
+    raw_value = os.getenv("UPLOAD_ALLOWED_TEXT_EXTS", "txt,md,csv,json").strip()
+    if not raw_value:
+        return ["txt", "md", "csv", "json"]
+    result: list[str] = []
+    for item in raw_value.split(","):
+        normalized = item.strip().lower().lstrip(".")
+        if normalized:
+            result.append(normalized)
+    return result or ["txt", "md", "csv", "json"]
+
+
+def get_aliyun_oss_endpoint() -> str:
+    """读取阿里云 OSS endpoint。"""
+
+    endpoint = os.getenv("ALIYUN_OSS_ENDPOINT", "").strip()
+    if not endpoint:
+        raise ValueError("Missing ALIYUN_OSS_ENDPOINT")
+    return endpoint
+
+
+def get_aliyun_oss_region() -> str:
+    """读取阿里云 OSS 区域。"""
+
+    return os.getenv("ALIYUN_OSS_REGION", "cn-hangzhou").strip()
+
+
+def get_aliyun_oss_bucket() -> str:
+    """读取阿里云 OSS bucket 名称。"""
+
+    bucket = os.getenv("ALIYUN_OSS_BUCKET", "").strip()
+    if not bucket:
+        raise ValueError("Missing ALIYUN_OSS_BUCKET")
+    return bucket
+
+
+def get_aliyun_oss_access_key_id() -> str:
+    """读取阿里云 OSS AccessKey ID。"""
+
+    access_key_id = os.getenv("ALIYUN_OSS_ACCESS_KEY_ID", "").strip()
+    if not access_key_id:
+        raise ValueError("Missing ALIYUN_OSS_ACCESS_KEY_ID")
+    return access_key_id
+
+
+def get_aliyun_oss_access_key_secret() -> str:
+    """读取阿里云 OSS AccessKey Secret。"""
+
+    access_key_secret = os.getenv("ALIYUN_OSS_ACCESS_KEY_SECRET", "").strip()
+    if not access_key_secret:
+        raise ValueError("Missing ALIYUN_OSS_ACCESS_KEY_SECRET")
+    return access_key_secret
+
+
+def get_aliyun_oss_object_prefix() -> str:
+    """读取阿里云 OSS 对象前缀。"""
+
+    return os.getenv("ALIYUN_OSS_OBJECT_PREFIX", "standard-assistant/uploads/text").strip()
+
+
+def get_aliyun_oss_public_base_url() -> str:
+    """读取可选 OSS 公网访问域名前缀。"""
+
+    return os.getenv("ALIYUN_OSS_PUBLIC_BASE_URL", "").strip()
+
+
+def get_pg_host() -> str:
+    """读取 PostgreSQL 主机地址。"""
+
+    return os.getenv("PG_HOST", "localhost").strip()
+
+
+def get_pg_port() -> int:
+    """读取 PostgreSQL 端口。"""
+
+    raw_value = os.getenv("PG_PORT", "5432").strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("PG_PORT must be an integer") from exc
+    if value <= 0:
+        raise ValueError("PG_PORT must be positive")
+    return value
+
+
+def get_pg_user() -> str:
+    """读取 PostgreSQL 用户名。"""
+
+    return os.getenv("PG_USER", "postgres").strip()
+
+
+def get_pg_password() -> str:
+    """读取 PostgreSQL 密码。"""
+
+    return os.getenv("PG_PASSWORD", "123456").strip()
+
+
+def get_pg_database() -> str:
+    """读取 PostgreSQL 数据库名。"""
+
+    return os.getenv("PG_DATABASE", "postgres").strip()
+
+
+def get_pg_schema() -> str:
+    """读取 PostgreSQL schema。"""
+
+    schema = os.getenv("PG_SCHEMA", "public").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
+        raise ValueError("PG_SCHEMA contains invalid characters")
+    return schema
+
+
+def get_db_url() -> str:
+    """根据 PG_* 配置构建 PostgreSQL 连接地址。"""
+
+    user = quote(get_pg_user(), safe="")
+    password = quote(get_pg_password(), safe="")
+    host = get_pg_host()
+    port = get_pg_port()
+    database = quote(get_pg_database(), safe="")
+    return f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
 
 def get_jwt_secret_key() -> str:

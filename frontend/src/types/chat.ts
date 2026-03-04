@@ -62,3 +62,19 @@ export interface ModelListResponse {
   default_model_id: string;
   models: ModelOption[];
 }
+
+export interface UploadTextResponse {
+  file_id: string;
+  file_name: string;
+  file_ext: string;
+  file_size: number;
+  content_type: string;
+  session_id?: string | null;
+  oss_key: string;
+  oss_url: string;
+  preview_text: string;
+  ocr_summary: string;
+  ocr_keywords: string[];
+  ocr_structured: Record<string, unknown>;
+  timestamp: string;
+}

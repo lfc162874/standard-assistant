@@ -23,9 +23,9 @@ import { ApiError, buildUrl, parseError } from "./http";
 let refreshInFlight: Promise<boolean> | null = null;
 let bootstrapInFlight: Promise<void> | null = null;
 
-function mergeHeaders(initHeaders?: HeadersInit): Headers {
+function mergeHeaders(initHeaders?: HeadersInit, hasFormData = false): Headers {
   const headers = new Headers(initHeaders ?? {});
-  if (!headers.has("Content-Type")) {
+  if (!hasFormData && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   return headers;
@@ -111,7 +111,7 @@ async function authFetch(path: string, init?: RequestInit, allowRetry = true): P
     throw new ApiError(401, "未登录或登录已过期");
   }
 
-  const headers = mergeHeaders(init?.headers);
+  const headers = mergeHeaders(init?.headers, init?.body instanceof FormData);
   headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(buildUrl(path), {
@@ -131,6 +131,14 @@ async function authFetch(path: string, init?: RequestInit, allowRetry = true): P
 }
 
 export async function authJsonFetch(path: string, init?: RequestInit): Promise<Response> {
+  const response = await authFetch(path, init, true);
+  if (!response.ok) {
+    await parseError(response);
+  }
+  return response;
+}
+
+export async function authRequestFetch(path: string, init?: RequestInit): Promise<Response> {
   const response = await authFetch(path, init, true);
   if (!response.ok) {
     await parseError(response);

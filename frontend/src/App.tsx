@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import MarkdownContent from "./components/MarkdownContent";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -6,9 +6,9 @@ import LoginPage from "./pages/LoginPage";
 import ProfilePage from "./pages/ProfilePage";
 import RegisterPage from "./pages/RegisterPage";
 import { bootstrapAuthSession, changeMyPassword, login, logout, register, updateMe } from "./services/auth";
-import { getHealth, getModels, postChatStream } from "./services/api";
+import { getHealth, getModels, postChatStream, postUploadTextFile } from "./services/api";
 import { getAuthSnapshot, subscribeAuthStore } from "./store/authStore";
-import type { ChatResponse, ModelOption } from "./types/chat";
+import type { ChatResponse, ModelOption, UploadTextResponse } from "./types/chat";
 import { ApiError } from "./services/http";
 import "./styles.css";
 
@@ -26,6 +26,7 @@ type ChatMessage =
 const SESSION_KEY = "standard_assistant_session_id";
 
 type BackendStatus = "checking" | "online" | "offline";
+type UploadStage = "idle" | "uploading" | "processing";
 
 function getOrCreateSessionId(): string {
   const existing = localStorage.getItem(SESSION_KEY);
@@ -53,6 +54,66 @@ const QUICK_QUESTIONS = [
   "GB/T 19001 最新版和旧版有什么差异？",
   "ISO 9001 当前状态和适用范围是什么？",
 ];
+
+type ComposerToolId = "assistant" | "thinking" | "research" | "code" | "image" | "more";
+
+interface ComposerTool {
+  id: ComposerToolId;
+  label: string;
+  seedText: string;
+}
+
+const COMPOSER_TOOLS: ComposerTool[] = [
+  { id: "assistant", label: "任务助理", seedText: "请作为任务助理，帮我处理以下内容：\n" },
+  { id: "thinking", label: "深度思考", seedText: "请从多个角度深入思考并分析：\n" },
+  { id: "research", label: "深度研究", seedText: "请进行深入研究并给出结论：\n" },
+  { id: "code", label: "代码", seedText: "请用代码实现并解释：\n" },
+  { id: "image", label: "图像", seedText: "请结合图像相关场景处理：\n" },
+  { id: "more", label: "更多", seedText: "请继续补充更多细节：\n" },
+];
+
+function renderComposerToolIcon(id: ComposerToolId) {
+  if (id === "assistant") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2.5a1 1 0 0 1 1 1v3.07l2.76-1.6a1 1 0 1 1 1 1.73L14 8.3l2.76 1.6a1 1 0 1 1-1 1.73L13 10.03V13a1 1 0 1 1-2 0v-2.97l-2.76 1.6a1 1 0 1 1-1-1.73L10 8.3 7.24 6.7a1 1 0 1 1 1-1.73L11 6.57V3.5a1 1 0 0 1 1-1zM4.5 15a1 1 0 0 1 1 1v.5h.5a1 1 0 1 1 0 2h-.5v.5a1 1 0 1 1-2 0v-.5H3a1 1 0 1 1 0-2h.5V16a1 1 0 0 1 1-1zm15 1a1 1 0 0 1 1 1v.5h.5a1 1 0 1 1 0 2h-.5v.5a1 1 0 1 1-2 0v-.5H18a1 1 0 1 1 0-2h.5V17a1 1 0 0 1 1-1z" />
+      </svg>
+    );
+  }
+  if (id === "thinking") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3a9 9 0 1 1-9 9 1 1 0 1 1 2 0 7 7 0 1 0 2.05-4.95 1 1 0 0 1-1.41-1.42A8.96 8.96 0 0 1 12 3zm.2 4a1 1 0 0 1 1 1v3.38l2.4 1.39a1 1 0 1 1-1 1.73l-2.9-1.68a1 1 0 0 1-.5-.87V8a1 1 0 0 1 1-1z" />
+      </svg>
+    );
+  }
+  if (id === "research") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M10.5 3a7.5 7.5 0 1 1-4.9 13.18l-2.9 2.9a1 1 0 1 1-1.4-1.42l2.9-2.9A7.5 7.5 0 0 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zm8.8 11.3a1 1 0 0 1 .7 1.23l-1.2 4a1 1 0 0 1-1.9-.57l.26-.86-1.78-.52a1 1 0 0 1 .56-1.92l1.8.52.25-.87a1 1 0 0 1 1.3-.67z" />
+      </svg>
+    );
+  }
+  if (id === "code") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8.7 7.3a1 1 0 0 1 0 1.4L5.4 12l3.3 3.3a1 1 0 1 1-1.4 1.4l-4-4a1 1 0 0 1 0-1.4l4-4a1 1 0 0 1 1.4 0zm6.6 0a1 1 0 0 1 1.4 0l4 4a1 1 0 0 1 0 1.4l-4 4a1 1 0 1 1-1.4-1.4l3.3-3.3-3.3-3.3a1 1 0 0 1 0-1.4zM12.9 4a1 1 0 0 1 .98 1.2l-2 14a1 1 0 1 1-1.98-.28l2-14A1 1 0 0 1 12.9 4z" />
+      </svg>
+    );
+  }
+  if (id === "image") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5 4a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H5zm0 2h14a1 1 0 0 1 1 1v7.17l-3.3-3.3a1 1 0 0 0-1.4 0L10 16.17l-1.3-1.3a1 1 0 0 0-1.4 0L4 18.17V7a1 1 0 0 1 1-1zm12 3a2 2 0 1 1-4 0 2 2 0 0 1 4 0z" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6a1 1 0 0 1 1-1h14a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1zm1 5a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5z" />
+    </svg>
+  );
+}
 
 function createMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -118,9 +179,15 @@ export default function App() {
       content: "你好，我是标准智能助手。你可以直接问标准条款、状态或版本差异。",
     },
   ]);
+  const [uploadingText, setUploadingText] = useState(false);
+  const [uploadedTextFile, setUploadedTextFile] = useState<UploadTextResponse | null>(null);
+  const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadingFileName, setUploadingFileName] = useState("");
 
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void bootstrapAuthSession();
@@ -222,6 +289,7 @@ export default function App() {
   function newSession() {
     const next = createNewSessionId();
     setSessionId(next);
+    setUploadedTextFile(null);
     setMessages([
       {
         id: createMessageId(),
@@ -239,6 +307,86 @@ export default function App() {
         content: "会话内容已清空。你可以继续提问。",
       },
     ]);
+  }
+
+  function applyComposerTool(tool: ComposerTool) {
+    setInput((prev) => {
+      if (!prev.trim()) return tool.seedText;
+      return `${prev}\n${tool.seedText}`;
+    });
+  }
+
+  async function handleTextFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const fileExt = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (fileExt === "pdf") {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: createMessageId(),
+          role: "system",
+          content: "已选择 PDF 文件。当前后端上传接口仍是文本模式，仅支持 txt/md/csv/json；PDF 识别将在 Step 14.1 接入。",
+        },
+      ]);
+      event.target.value = "";
+      return;
+    }
+
+    setUploadingText(true);
+    setUploadStage("uploading");
+    setUploadProgress(0);
+    setUploadingFileName(file.name);
+    try {
+      const uploaded = await postUploadTextFile({
+        file,
+        session_id: sessionId,
+        onProgress: (progress) => {
+          setUploadProgress(progress);
+          if (progress >= 100) {
+            setUploadStage("processing");
+            return;
+          }
+          setUploadStage("uploading");
+        },
+      });
+      setUploadedTextFile(uploaded);
+      setUploadProgress(100);
+      setUploadStage("processing");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: createMessageId(),
+          role: "system",
+          content: `文本文件「${uploaded.file_name}」上传成功并已完成 GLM-OCR 识别。摘要：${uploaded.ocr_summary}`,
+        },
+      ]);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        await handleLogout();
+        return;
+      }
+
+      const detail =
+        error instanceof ApiError
+          ? `${error.detail}（HTTP ${error.status}）`
+          : error instanceof Error
+            ? error.message
+            : "未知错误";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: createMessageId(),
+          role: "system",
+          content: `文本上传失败：${detail}`,
+        },
+      ]);
+    } finally {
+      setUploadingText(false);
+      setUploadStage("idle");
+      event.target.value = "";
+    }
   }
 
   async function handleLogin(payload: { username: string; password: string }) {
@@ -294,6 +442,7 @@ export default function App() {
     setAuthSuccess("");
     try {
       await logout();
+      setUploadedTextFile(null);
       setMessages([
         {
           id: createMessageId(),
@@ -479,6 +628,7 @@ export default function App() {
   const latestRetrievedCount = readRetrievedCount(latestResult);
   const totalMessages = userMessageCount + assistantMessageCount;
   const welcomeMode = totalMessages === 0;
+  const uploadActionDisabled = uploadingText || loading;
 
   if (!auth.initialized) {
     return (
@@ -640,6 +790,14 @@ export default function App() {
           <div className="topbar-right">
             <span className="meta-chip">连接 {statusLabel(backendStatus)}</span>
             <span className="meta-chip">检索 {latestRetrievedCount}</span>
+            {uploadedTextFile ? <span className="meta-chip">文件 {uploadedTextFile.file_name}</span> : null}
+            <label
+              htmlFor={uploadActionDisabled ? undefined : "text-file-upload-input"}
+              className={`ghost-btn upload-trigger-label${uploadActionDisabled ? " disabled" : ""}`}
+              aria-disabled={uploadActionDisabled}
+            >
+              {uploadingText ? `上传中 ${uploadProgress}%` : "上传文本"}
+            </label>
             <button type="button" className="ghost-btn" onClick={() => setAuthScreen("profile")}>
               个人资料
             </button>
@@ -667,28 +825,77 @@ export default function App() {
                   value={input}
                   onChange={(eventPayload) => setInput(eventPayload.target.value)}
                   onKeyDown={handleInputKeyDown}
-                  placeholder="向标准智能助手提问"
+                  placeholder="向标准智能助手提问（支持直接粘贴文本）"
                   disabled={loading}
                   rows={3}
                   aria-label="标准问题输入框"
                 />
-                <div className="welcome-tools">
-                  <div className="welcome-quick-tags">
-                    {QUICK_QUESTIONS.map((question) => (
+                {uploadingText ? (
+                  <section className="upload-progress-card upload-progress-inline" aria-live="polite">
+                    <div className="upload-progress-file-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.8a2 2 0 0 0-.59-1.41l-4.8-4.8A2 2 0 0 0 13.2 2H6zm7 1.7 5.3 5.3H14a1 1 0 0 1-1-1V3.7zM7 14a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm1 3a1 1 0 1 0 0 2h5a1 1 0 1 0 0-2H8z" />
+                      </svg>
+                    </div>
+                    <div className="upload-progress-body">
+                      <div className="upload-progress-name" title={uploadingFileName}>
+                        {uploadingFileName || "正在上传文件"}
+                      </div>
+                      <div className="upload-progress-meta">
+                        <span className="upload-progress-spinner" aria-hidden="true" />
+                        <span>{uploadStage === "processing" ? "识别中" : "上传中"}</span>
+                        <span>{uploadProgress}%</span>
+                      </div>
+                      <div className="upload-progress-track" aria-hidden="true">
+                        <span style={{ width: `${Math.max(uploadProgress, 4)}%` }} />
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
+                <div className="composer-bottom">
+                  <div className="composer-tool-list" role="group" aria-label="快捷模式">
+                    {COMPOSER_TOOLS.map((tool) => (
                       <button
-                        key={question}
+                        key={tool.id}
                         type="button"
-                        className="quick-tag"
+                        className="composer-tool-chip"
                         disabled={loading}
-                        onClick={() => setInput(question)}
+                        onClick={() => applyComposerTool(tool)}
                       >
-                        {question}
+                        <span className="composer-tool-icon">{renderComposerToolIcon(tool.id)}</span>
+                        <span>{tool.label}</span>
                       </button>
                     ))}
                   </div>
-                  <button type="submit" className="send-btn" disabled={loading || !input.trim()}>
-                    {loading ? "发送中" : "发送"}
-                  </button>
+                  <div className="composer-action-group">
+                    <button
+                      type="button"
+                      className="composer-icon-btn"
+                      aria-label="联网能力暂未开启"
+                      title="联网能力暂未开启"
+                      disabled
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 2a10 10 0 1 0 10 10A10.01 10.01 0 0 0 12 2zm7.93 9h-3.05a15.48 15.48 0 0 0-1.2-5.04A8.04 8.04 0 0 1 19.93 11zM12 4.06A13.22 13.22 0 0 1 14.82 11H9.18A13.22 13.22 0 0 1 12 4.06zM8.32 5.96A15.48 15.48 0 0 0 7.12 11H4.07a8.04 8.04 0 0 1 4.25-5.04zM4.07 13h3.05a15.48 15.48 0 0 0 1.2 5.04A8.04 8.04 0 0 1 4.07 13zM12 19.94A13.22 13.22 0 0 1 9.18 13h5.64A13.22 13.22 0 0 1 12 19.94zm3.68-1.9A15.48 15.48 0 0 0 16.88 13h3.05a8.04 8.04 0 0 1-4.25 5.04z" />
+                      </svg>
+                    </button>
+                    <label
+                      htmlFor={uploadActionDisabled ? undefined : "text-file-upload-input"}
+                      className={`composer-icon-btn upload-trigger-label${uploadActionDisabled ? " disabled" : ""}`}
+                      aria-label="上传文本文件"
+                      aria-disabled={uploadActionDisabled}
+                      title="上传文本文件"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M16.5 6a3.5 3.5 0 0 1 0 7H8a1 1 0 1 1 0-2h8.5a1.5 1.5 0 0 0 0-3H7a3.5 3.5 0 0 0 0 7h7.5a1 1 0 1 1 0 2H7a5.5 5.5 0 0 1 0-11h9.5z" />
+                      </svg>
+                    </label>
+                    <button type="submit" className="composer-send-btn" disabled={loading || !input.trim()}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 4a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V5a1 1 0 0 1 1-1z" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -765,16 +972,77 @@ export default function App() {
                   value={input}
                   onChange={(eventPayload) => setInput(eventPayload.target.value)}
                   onKeyDown={handleInputKeyDown}
-                  placeholder="继续提问标准问题..."
+                  placeholder="向标准智能助手提问（支持直接粘贴文本）"
                   disabled={loading}
                   rows={3}
                   aria-label="标准问题输入框"
                 />
-                <div className="chat-input-footer">
-                  <span className="input-tip">Enter 发送，Shift+Enter 换行</span>
-                  <button type="submit" className="send-btn" disabled={loading || !input.trim()}>
-                    {loading ? "发送中" : "发送"}
-                  </button>
+                {uploadingText ? (
+                  <section className="upload-progress-card upload-progress-inline" aria-live="polite">
+                    <div className="upload-progress-file-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.8a2 2 0 0 0-.59-1.41l-4.8-4.8A2 2 0 0 0 13.2 2H6zm7 1.7 5.3 5.3H14a1 1 0 0 1-1-1V3.7zM7 14a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm1 3a1 1 0 1 0 0 2h5a1 1 0 1 0 0-2H8z" />
+                      </svg>
+                    </div>
+                    <div className="upload-progress-body">
+                      <div className="upload-progress-name" title={uploadingFileName}>
+                        {uploadingFileName || "正在上传文件"}
+                      </div>
+                      <div className="upload-progress-meta">
+                        <span className="upload-progress-spinner" aria-hidden="true" />
+                        <span>{uploadStage === "processing" ? "识别中" : "上传中"}</span>
+                        <span>{uploadProgress}%</span>
+                      </div>
+                      <div className="upload-progress-track" aria-hidden="true">
+                        <span style={{ width: `${Math.max(uploadProgress, 4)}%` }} />
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
+                <div className="composer-bottom">
+                  <div className="composer-tool-list" role="group" aria-label="快捷模式">
+                    {COMPOSER_TOOLS.map((tool) => (
+                      <button
+                        key={`chat-${tool.id}`}
+                        type="button"
+                        className="composer-tool-chip"
+                        disabled={loading}
+                        onClick={() => applyComposerTool(tool)}
+                      >
+                        <span className="composer-tool-icon">{renderComposerToolIcon(tool.id)}</span>
+                        <span>{tool.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="composer-action-group">
+                    <button
+                      type="button"
+                      className="composer-icon-btn"
+                      aria-label="联网能力暂未开启"
+                      title="联网能力暂未开启"
+                      disabled
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 2a10 10 0 1 0 10 10A10.01 10.01 0 0 0 12 2zm7.93 9h-3.05a15.48 15.48 0 0 0-1.2-5.04A8.04 8.04 0 0 1 19.93 11zM12 4.06A13.22 13.22 0 0 1 14.82 11H9.18A13.22 13.22 0 0 1 12 4.06zM8.32 5.96A15.48 15.48 0 0 0 7.12 11H4.07a8.04 8.04 0 0 1 4.25-5.04zM4.07 13h3.05a15.48 15.48 0 0 0 1.2 5.04A8.04 8.04 0 0 1 4.07 13zM12 19.94A13.22 13.22 0 0 1 9.18 13h5.64A13.22 13.22 0 0 1 12 19.94zm3.68-1.9A15.48 15.48 0 0 0 16.88 13h3.05a8.04 8.04 0 0 1-4.25 5.04z" />
+                      </svg>
+                    </button>
+                    <label
+                      htmlFor={uploadActionDisabled ? undefined : "text-file-upload-input"}
+                      className={`composer-icon-btn upload-trigger-label${uploadActionDisabled ? " disabled" : ""}`}
+                      aria-label="上传文本文件"
+                      aria-disabled={uploadActionDisabled}
+                      title="上传文本文件"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M16.5 6a3.5 3.5 0 0 1 0 7H8a1 1 0 1 1 0-2h8.5a1.5 1.5 0 0 0 0-3H7a3.5 3.5 0 0 0 0 7h7.5a1 1 0 1 1 0 2H7a5.5 5.5 0 0 1 0-11h9.5z" />
+                      </svg>
+                    </label>
+                    <button type="submit" className="composer-send-btn" disabled={loading || !input.trim()}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 4a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V5a1 1 0 0 1 1-1z" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </form>
             </>
@@ -784,9 +1052,19 @@ export default function App() {
         <footer className="main-footer">
           <span>引用条数：{latestCitations.length}</span>
           <span>消息数：{totalMessages}</span>
+          <span>文件识别：{uploadedTextFile ? "已完成" : "未上传"}</span>
           <span>后端提示：{backendHint}</span>
         </footer>
       </section>
+      <input
+        id="text-file-upload-input"
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md,.csv,.json,.pdf,text/plain,application/json,text/csv,application/pdf"
+        onChange={handleTextFileChange}
+        className="visually-hidden"
+        tabIndex={-1}
+      />
     </main>
     </ProtectedRoute>
   );

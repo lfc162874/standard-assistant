@@ -7,7 +7,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# 编辑 .env，至少填写 DEEPSEEK_API_KEY
+# 编辑 .env，至少填写 DEEPSEEK_API_KEY 和 PostgreSQL 的 PG_* 配置
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -24,6 +24,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `POST /api/v1/users/me/password`
 - `POST /api/v1/chat`
 - `POST /api/v1/chat/stream` (SSE 流式输出)
+- `POST /api/v1/files/upload-text` (文本上传 -> OSS -> GLM-OCR)
 
 ## RAG QA Chain (Enabled)
 
@@ -45,6 +46,18 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `QWEN_BASE_URL`
 - `DEFAULT_CHAT_MODEL_ID`
 - `CHAT_ENABLED_MODELS`
+- `GLM_OCR_API_KEY`
+- `GLM_OCR_BASE_URL`
+- `GLM_OCR_MODEL`
+- `UPLOAD_MAX_BYTES`
+- `UPLOAD_MAX_TEXT_CHARS`
+- `UPLOAD_ALLOWED_TEXT_EXTS`
+- `ALIYUN_OSS_ENDPOINT`
+- `ALIYUN_OSS_BUCKET`
+- `ALIYUN_OSS_ACCESS_KEY_ID`
+- `ALIYUN_OSS_ACCESS_KEY_SECRET`
+- `ALIYUN_OSS_OBJECT_PREFIX`
+- `ALIYUN_OSS_PUBLIC_BASE_URL`
 
 快速验证（先登录，再调用 chat）：
 
@@ -88,6 +101,27 @@ curl -s http://127.0.0.1:8000/api/v1/chat \
 - `deepseek-chat`
 - `deepseek-reasoner`
 - `qwen-plus`
+
+## Text Upload + GLM-OCR
+
+该链路用于先落地 Step 14.0：
+- 上传文本文件（`txt/md/csv/json`）
+- 原文件写入阿里云 OSS
+- 调用 GLM-OCR 对文本做结构化提取
+
+上传示例：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/files/upload-text \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -F "session_id=demo_session" \
+  -F "file=@./sample.txt;type=text/plain"
+```
+
+重点看返回字段：
+- `file_id/file_name/file_ext/file_size`：文件标识
+- `oss_key/oss_url`：OSS 存储位置
+- `ocr_summary/ocr_keywords/ocr_structured`：GLM-OCR 结果
 
 ## Memory behavior
 

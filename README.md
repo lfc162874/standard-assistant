@@ -7,7 +7,7 @@
 
 ### Web 前端（桌面端）
 
-![img.png](img.png)
+![标准智能助手桌面端演示](docs/images/frontend-chat-desktop.png)
 
 ## 主要能力
 
@@ -17,6 +17,7 @@
 - 流式输出：SSE 实时返回回答内容
 - 对话记忆：基于 Redis 的多轮会话记忆
 - 多模型切换：支持 DeepSeek / Qwen 模型切换
+- 文件上传识别：文本文件上传到 OSS，并调用 GLM-OCR 做结构化提取
 - 前后端分离：`frontend/` 与 `backend/` 独立开发运行
 
 ## 技术栈
@@ -24,7 +25,9 @@
 - 前端：React 18 + TypeScript + Vite
 - 后端：FastAPI + LangChain
 - 大模型：DeepSeek、Qwen（OpenAI 兼容调用）
+- OCR 模型：GLM-OCR
 - Embedding：`text-embedding-v4`
+- 文件存储：阿里云 OSS
 - 结构化数据：PostgreSQL
 - 向量数据库：Chroma（本地持久化）
 - 记忆存储：Redis
@@ -105,6 +108,35 @@ python scripts/ingest_standards_meta_to_chroma.py --truncate --count 10000
 - `GET /api/v1/models`：获取可用模型列表
 - `POST /api/v1/chat`：非流式问答
 - `POST /api/v1/chat/stream`：SSE 流式问答
+- `POST /api/v1/files/upload-text`：文本上传 -> OSS -> GLM-OCR
+
+## 文本上传（Step 14.0）
+
+目标：先打通“文本上传 -> OSS 存储 -> GLM-OCR 识别”链路，为后续文件问答做基础。
+
+支持格式：
+- `txt`
+- `md`
+- `csv`
+- `json`
+
+最小环境变量（后端 `.env`）：
+- `GLM_OCR_API_KEY`
+- `GLM_OCR_BASE_URL`
+- `GLM_OCR_MODEL`
+- `ALIYUN_OSS_ENDPOINT`
+- `ALIYUN_OSS_BUCKET`
+- `ALIYUN_OSS_ACCESS_KEY_ID`
+- `ALIYUN_OSS_ACCESS_KEY_SECRET`
+
+调用示例（需先登录拿到 Access Token）：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/files/upload-text \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -F "session_id=demo_session" \
+  -F "file=@./sample.txt;type=text/plain"
+```
 
 ## 相关文档
 

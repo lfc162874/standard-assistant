@@ -21,9 +21,16 @@ export async function parseError(response: Response): Promise<never> {
   let detail = fallback;
 
   try {
-    const body = (await response.json()) as { detail?: string };
+    const body = (await response.json()) as { detail?: string | Array<Record<string, unknown>> };
     if (typeof body.detail === "string" && body.detail.trim()) {
       detail = body.detail;
+    } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+      const messages = body.detail.map((item) => {
+        const locRaw = Array.isArray(item.loc) ? item.loc.join(".") : "body";
+        const msgRaw = typeof item.msg === "string" ? item.msg : "参数校验失败";
+        return `${locRaw}: ${msgRaw}`;
+      });
+      detail = messages.join("；");
     }
   } catch {
     // Ignore parse errors and keep fallback detail.
